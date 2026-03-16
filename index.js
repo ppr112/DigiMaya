@@ -146,7 +146,7 @@ app.post("/chat", async (req, res) => {
       if (products && products.length > 0) {
         productContext = "Our available products are:\n" +
           products.map((p) =>
-            `- ${p.name} ($${p.price}): ${p.description}`
+            `- ${p.name}: $${p.price}`
           ).join("\n");
       }
     }
@@ -160,7 +160,7 @@ ${productContext ? `\n${productContext}` : ""}`;
 
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 300,
+      max_tokens: 500,
       messages: [{ role: "user", content: message }],
       system: systemPrompt,
     });
