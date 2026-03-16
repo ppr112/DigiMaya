@@ -152,10 +152,10 @@ app.post("/chat", async (req, res) => {
     }
 
     // Call Claude API
-    const systemPrompt = `You are a helpful customer support assistant for a digital products business
-that sells tools to physical product sellers. You help customers find the right
-product for their needs, answer questions, and provide support.
-Be friendly, concise and helpful. Keep responses under 3 sentences.
+    const systemPrompt = `You are a helpful customer support assistant for a digital products business that sells tools to physical product sellers. 
+When listing products, always format them as a numbered list with name and price only.
+Keep responses concise and under 100 words.
+Never cut off a list midway — always complete it.
 ${productContext ? `\n${productContext}` : ""}`;
 
     const response = await anthropic.messages.create({
