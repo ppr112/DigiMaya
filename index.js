@@ -157,7 +157,8 @@ When listing products, always format them as a numbered list with name and price
 Keep responses concise and under 100 words.
 Never cut off a list midway — always complete it.
 ${productContext ? `\n${productContext}` : ""}`;
-
+    console.log("Product context:", productContext);
+    console.log("System prompt:", systemPrompt);
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 500,
