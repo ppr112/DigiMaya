@@ -4,7 +4,8 @@ const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 const Anthropic = require("@anthropic-ai/sdk");
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 const app = express();
 app.use(cors());
@@ -22,13 +23,6 @@ const anthropic = new Anthropic({
 });
 
 // Email transporter
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.ALERT_EMAIL,
-    pass: process.env.GMAIL_PASSWORD,
-  },
-});
 
 // ─── HEALTH CHECK ───────────────────────────────────────
 app.get("/", (req, res) => {
@@ -82,8 +76,8 @@ app.post("/chat", async (req, res) => {
         status: "pending",
       });
 
-      await transporter.sendMail({
-        from: process.env.ALERT_EMAIL,
+      await resend.emails.send({
+        from: "onboarding@resend.dev",
         to: process.env.ALERT_EMAIL,
         subject: "New Human Handoff Request",
         text: `A customer is requesting a human agent.\n\nSession ID: ${session_id}\nMessage: ${message}`,
