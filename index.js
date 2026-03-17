@@ -98,9 +98,8 @@ app.post("/chat", async (req, res) => {
     const words = message.toLowerCase()
       .replace(/[^a-z0-9 ]/g, "")
       .split(" ")
-      .filter(w => w.length > 3)
-      .sort((a, b) => b.length - a.length);
-      .filter(w => !["products", "product"].includes(w));
+      .filter(w => w.length > 3 && !["products", "product"].includes(w))
+.sort((a, b) => b.length - a.length);
     console.log("Search words:", words);
 
     let faqMatch = null;
