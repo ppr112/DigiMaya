@@ -4,7 +4,7 @@ const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 const Anthropic = require("@anthropic-ai/sdk");
 const { Resend } = require("resend");
-const { parsePhoneNumber, isValidPhoneNumber } = require("libphonenumber-js");
+const { isValidPhoneNumber } = require("libphonenumber-js");
 
 const app = express();
 app.use(cors());
@@ -26,6 +26,14 @@ function isValidPhone(number) {
 
 function isValidEmail(email) {
   return emailRegex.test(email.trim());
+}
+
+function detectContactChoice(msg) {
+  if (msg.includes("1") || msg.includes("whatsapp")) return "whatsapp";
+  if (msg.includes("2") || msg.includes("text")) return "text";
+  if (msg.includes("3") || msg.includes("phone")) return "phone";
+  if (msg.includes("4") || msg.includes("email")) return "email";
+  return null;
 }
 
 app.get("/", (req, res) => {
@@ -67,12 +75,23 @@ app.post("/chat", async (req, res) => {
       .maybeSingle();
 
     if (existingHandoff && existingHandoff.contact_method === "phone" && existingHandoff.contact_detail && !existingHandoff.preferred_time) {
+      const newChoice = detectContactChoice(message.toLowerCase());
+      if (newChoice) {
+        await supabase.from("handoff_requests").update({ contact_method: newChoice, contact_detail: null, preferred_time: null }).eq("session_id", session_id).eq("reason", "purchase_intent");
+        let reply = "";
+        if (newChoice === "whatsapp") reply = "No problem! Please share your WhatsApp number with country code, for example: +91 9876543210";
+        else if (newChoice === "text") reply = "No problem! Please share your mobile number with country code, for example: +91 9876543210";
+        else if (newChoice === "phone") reply = "No problem! Please share your phone number with country code, for example: +91 9876543210";
+        else if (newChoice === "email") reply = "No problem! Please share your email address, for example: name@example.com";
+        await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
+        return res.json({ reply });
+      }
       await supabase.from("handoff_requests").update({ preferred_time: message }).eq("session_id", session_id).eq("reason", "purchase_intent");
       await resend.emails.send({
         from: "onboarding@resend.dev",
         to: process.env.ALERT_EMAIL,
         subject: "Customer Phone Call Details Received!",
-        text: "Customer wants a phone call.\nNumber: " + existingHandoff.contact_detail + "\nPreferred time: " + message + "\nSession: " + session_id,
+        text: "Number: " + existingHandoff.contact_detail + "\nPreferred time: " + message + "\nSession: " + session_id,
       });
       const reply = "Perfect! Our team will call you at " + message + ". Looking forward to helping you grow your business!";
       await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
@@ -81,6 +100,18 @@ app.post("/chat", async (req, res) => {
 
     if (existingHandoff && existingHandoff.contact_method && !existingHandoff.contact_detail) {
       const rawMessage = message.trim();
+      const newChoice = detectContactChoice(message.toLowerCase());
+
+      if (newChoice && newChoice !== existingHandoff.contact_method) {
+        await supabase.from("handoff_requests").update({ contact_method: newChoice, contact_detail: null }).eq("session_id", session_id).eq("reason", "purchase_intent");
+        let reply = "";
+        if (newChoice === "whatsapp") reply = "No problem! Please share your WhatsApp number with country code, for example: +91 9876543210";
+        else if (newChoice === "text") reply = "No problem! Please share your mobile number with country code, for example: +91 9876543210";
+        else if (newChoice === "phone") reply = "No problem! Please share your phone number with country code, for example: +91 9876543210";
+        else if (newChoice === "email") reply = "No problem! Please share your email address, for example: name@example.com";
+        await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
+        return res.json({ reply });
+      }
 
       if (existingHandoff.contact_method === "whatsapp" || existingHandoff.contact_method === "text") {
         if (isValidPhone(rawMessage)) {
@@ -95,7 +126,7 @@ app.post("/chat", async (req, res) => {
           await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
           return res.json({ reply });
         } else {
-          const reply = "That does not look like a valid phone number. Please include your country code and full number, for example: +91 9876543210 or +1 2025551234";
+          const reply = "That does not look like a valid phone number. Please include your country code and full number, for example: +91 9876543210\n\nOr type 1, 2, 3 or 4 to choose a different contact method.";
           await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
           return res.json({ reply });
         }
@@ -108,7 +139,7 @@ app.post("/chat", async (req, res) => {
           await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
           return res.json({ reply });
         } else {
-          const reply = "That does not look like a valid phone number. Please include your country code and full number, for example: +91 9876543210 or +1 2025551234";
+          const reply = "That does not look like a valid phone number. Please include your country code and full number, for example: +91 9876543210\n\nOr type 1, 2, 3 or 4 to choose a different contact method.";
           await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
           return res.json({ reply });
         }
@@ -127,7 +158,7 @@ app.post("/chat", async (req, res) => {
           await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
           return res.json({ reply });
         } else {
-          const reply = "That does not look like a valid email address. Please try again like this: name@example.com";
+          const reply = "That does not look like a valid email address. Please try again like this: name@example.com\n\nOr type 1, 2, 3 or 4 to choose a different contact method.";
           await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
           return res.json({ reply });
         }
@@ -136,17 +167,18 @@ app.post("/chat", async (req, res) => {
 
     if (existingHandoff && !existingHandoff.contact_method) {
       const msg = message.toLowerCase();
+      const choice = detectContactChoice(msg);
       let reply = "";
-      if (msg.includes("1") || msg.includes("whatsapp")) {
+      if (choice === "whatsapp") {
         await supabase.from("handoff_requests").update({ contact_method: "whatsapp" }).eq("session_id", session_id).eq("reason", "purchase_intent");
         reply = "Please share your WhatsApp number with country code, for example: +91 9876543210";
-      } else if (msg.includes("2") || msg.includes("text")) {
+      } else if (choice === "text") {
         await supabase.from("handoff_requests").update({ contact_method: "text" }).eq("session_id", session_id).eq("reason", "purchase_intent");
         reply = "Please share your mobile number with country code, for example: +91 9876543210";
-      } else if (msg.includes("3") || msg.includes("phone")) {
+      } else if (choice === "phone") {
         await supabase.from("handoff_requests").update({ contact_method: "phone" }).eq("session_id", session_id).eq("reason", "purchase_intent");
         reply = "Please share your phone number with country code, for example: +91 9876543210";
-      } else if (msg.includes("4") || msg.includes("email")) {
+      } else if (choice === "email") {
         await supabase.from("handoff_requests").update({ contact_method: "email" }).eq("session_id", session_id).eq("reason", "purchase_intent");
         reply = "Please share your email address, for example: name@example.com";
       } else {
