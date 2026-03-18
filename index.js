@@ -1,6 +1,5 @@
-if (process.env.NODE_ENV !== "production") {
-  require("dotenv").config();
-}
+require("dotenv").config();
+console.log("ENV CHECK:", process.env.NODE_ENV, process.env.SUPABASE_URL ? "URL OK" : "URL MISSING");
 const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
