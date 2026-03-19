@@ -79,7 +79,6 @@ app.get("/products", async (req, res) => {
 
 app.post("/call/connect", handleConnect);
 
-app.use("/", smsAgent);
 
 app.post("/chat", async (req, res) => {
   const { message, session_id } = req.body;

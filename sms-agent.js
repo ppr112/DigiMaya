@@ -14,10 +14,17 @@ function init(supabaseClient, anthropicClient, twilioClientInstance) {
 
 // ─── INCOMING SMS WEBHOOK ─────────────────────────────────────
 router.post("/sms", async (req, res) => {
+  console.log("SMS webhook received!");
+  console.log("Body:", req.body);
   const incomingMsg = req.body.Body;
   const fromNumber = req.body.From;
   const session_id = "sms_" + fromNumber.replace(/\D/g, "");
-
+  console.log("Processing SMS from:", fromNumber);
+console.log("Message:", incomingMsg);
+console.log("Session:", session_id);
+console.log("Supabase connected:", !!supabase);
+console.log("Anthropic connected:", !!anthropic);
+console.log("Twilio connected:", !!twilioClient);
   try {
     await supabase.from("chat_messages").insert({
       session_id,
@@ -98,17 +105,24 @@ router.post("/sms", async (req, res) => {
     res.send("<Response></Response>");
 
   } catch (err) {
-    console.error("SMS error:", err.message);
+    console.error("SMS error FULL:", err);
     res.send("<Response></Response>");
   }
 });
 
 async function sendSMS(to, body) {
-  await twilioClient.messages.create({
-    body,
-    from: process.env.TWILIO_PHONE_NUMBER,
-    to,
-  });
+  console.log("Sending SMS to:", to, "Body:", body);
+  console.log("From number:", process.env.TWILIO_PHONE_NUMBER);
+  try {
+    const msg = await twilioClient.messages.create({
+      body,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to,
+    });
+    console.log("SMS sent successfully! SID:", msg.sid);
+  } catch (err) {
+    console.error("sendSMS error:", err.message);
+  }
 }
 
 module.exports = { router, init };
