@@ -25,7 +25,10 @@ const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 function isValidPhone(number) {
   try {
     const cleaned = number.replace(/[\s\-\(\)]/g, "");
-    return cleaned.startsWith("+") && cleaned.length >= 8 && cleaned.length <= 16;
+    if (!cleaned.startsWith("+")) return false;
+    if (cleaned.length < 9 || cleaned.length > 16) return false;
+    if (!/^\+\d+$/.test(cleaned)) return false;
+    return true;
   } catch (e) {
     return false;
   }
@@ -152,6 +155,7 @@ app.post("/chat", async (req, res) => {
       }
 
       if (existingHandoff.contact_method === "phone") {
+        console.log("Phone validation check:", rawMessage, isValidPhone(rawMessage));
         if (isValidPhone(rawMessage)) {
           await supabase.from("handoff_requests").update({ contact_detail: rawMessage, contact_method: "phone" }).eq("session_id", session_id).eq("reason", "purchase_intent");
           await connectCall(rawMessage, existingHandoff.product_interest || "your products");
@@ -185,7 +189,22 @@ app.post("/chat", async (req, res) => {
       }
     }
 
-    if (existingHandoff && !existingHandoff.contact_method) {
+if (existingHandoff && !existingHandoff.customer_name && !existingHandoff.contact_method) {
+  const parts = message.split(",");
+  const customerName = parts[0] ? parts[0].trim() : message.trim();
+  const businessType = parts[1] ? parts[1].trim() : "Not specified";
+
+  await supabase.from("handoff_requests")
+    .update({ customer_name: customerName, business_type: businessType })
+    .eq("session_id", session_id)
+    .eq("reason", "purchase_intent");
+
+  const reply = "Nice to meet you " + customerName + "! How would you like our team to reach you?\n\nA. Phone call (we call you within minutes)\nB. WhatsApp\nC. Text message\nD. Email";
+  await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
+  return res.json({ reply });
+}
+
+    if (existingHandoff && existingHandoff.customer_name && !existingHandoff.contact_method) {
       const choice = detectContactChoice(message.toLowerCase());
       let reply = "";
       if (choice === "phone") {
@@ -212,16 +231,16 @@ app.post("/chat", async (req, res) => {
     const wantsHuman = intent === "human";
 
     if (wantsToBuy) {
-      await supabase.from("handoff_requests").insert({
-        session_id,
-        reason: "purchase_intent",
-        status: "pending",
-        product_interest: message,
-      });
-      const reply = "That is great! How would you like our team to reach you to complete your purchase?\n\nA. Phone call (we call you within minutes)\nB. WhatsApp\nC. Text message\nD. Email";
-      await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
-      return res.json({ reply });
-    }
+  await supabase.from("handoff_requests").insert({
+    session_id,
+    reason: "purchase_intent",
+    status: "pending",
+    product_interest: message,
+  });
+  const reply = "That is great! To help our team reach out to you personally, may I know your Name and what type of Business you run? For example: 'John, online clothing store'";
+  await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
+  return res.json({ reply });
+}
 
     if (wantsHuman) {
       await supabase.from("handoff_requests").insert({ session_id, reason: "customer_request", status: "pending" });
@@ -318,6 +337,14 @@ app.post("/chat", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+
+app.delete("/cleanup/:session_id", async (req, res) => {
+  const { session_id } = req.params;
+  await supabase.from("handoff_requests").delete().eq("session_id", session_id);
+  await supabase.from("chat_messages").delete().eq("session_id", session_id);
+  res.json({ message: "Session cleaned up: " + session_id });
 });
 
 app.get("/handoff", async (req, res) => {
