@@ -23,6 +23,7 @@ app.get("/", (req, res) => {
 });
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "maya_verify_token";
+const IG_ACCESS_TOKEN = process.env.IG_ACCESS_TOKEN;
 
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -37,12 +38,52 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-app.post("/webhook", (req, res) => {
-  console.log("Webhook event received:");
-  console.log(JSON.stringify(req.body, null, 2));
+app.post("/webhook", async (req, res) => {
+  const body = req.body;
+  console.log("Webhook event received:", JSON.stringify(body, null, 2));
 
+  // Must respond 200 quickly so Meta doesn't retry
   res.sendStatus(200);
+
+  if (body.object !== "instagram") return;
+
+  for (const entry of body.entry || []) {
+    for (const event of entry.messaging || []) {
+      const senderId = event.sender?.id;
+      const messageText = event.message?.text;
+
+      // Ignore messages sent by the bot itself (echo)
+      if (event.message?.is_echo) continue;
+      // Ignore if no text (e.g. stickers, reactions)
+      if (!messageText) continue;
+
+      console.log(`Message from ${senderId}: ${messageText}`);
+
+      await sendReply(senderId, `You said: "${messageText}"`);
+    }
+  }
 });
+
+async function sendReply(recipientId, text) {
+  try {
+    const response = await fetch(
+      `https://graph.instagram.com/v21.0/me/messages`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipient: { id: recipientId },
+          message: { text },
+          access_token: IG_ACCESS_TOKEN,
+        }),
+      }
+    );
+    const data = await response.json();
+    console.log("Reply sent:", data);
+  } catch (err) {
+    console.error("Failed to send reply:", err);
+  }
+}
 
 app.get("/products", async (req, res) => {
   const { search } = req.query;
