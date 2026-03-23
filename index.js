@@ -57,12 +57,103 @@ app.post("/webhook", async (req, res) => {
       // Ignore if no text (e.g. stickers, reactions)
       if (!messageText) continue;
 
-      console.log(`Message from ${senderId}: ${messageText}`);
+    console.log(`Message from ${senderId}: ${messageText}`);
 
-      await sendReply(senderId, `You said: "${messageText}"`);
+    const mayaReply = await getMayaReplyForInstagram(senderId, messageText);  // ← ADD THIS
+    await sendReply(senderId, mayaReply);                                       // ← ADD THIS
     }
   }
 });
+
+async function getMayaReplyForInstagram(senderId, messageText) {
+  try {
+    // Get or build conversation history from Supabase
+    const { data: recentChats } = await supabase
+      .from("chat_messages")
+      .select("*")
+      .eq("session_id", senderId)
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    // Save incoming message
+    await supabase.from("chat_messages").insert({
+      session_id: senderId,
+      role: "user",
+      content: messageText,
+    });
+
+    const { data: products } = await supabase.from("products").select("*").eq("in_stock", true);
+    const { data: faqs } = await supabase.from("faqs").select("*");
+
+    const conversationHistory = recentChats
+      ? recentChats.reverse().map((m) => ({ role: m.role, content: m.content }))
+      : [];
+
+    conversationHistory.push({ role: "user", content: messageText });
+
+    const productList = products && products.length > 0
+      ? products.map((p) => `${p.name} — $${p.price}: ${p.description}`).join("\n")
+      : "";
+
+    const faqList = faqs && faqs.length > 0
+      ? faqs.map((f) => `Q: ${f.question}\nA: ${f.answer}`).join("\n\n")
+      : "";
+
+    // Reuse your existing system prompt
+    const systemPrompt = `You are Maya, a smart and friendly pre-sales assistant for a digital products business...
+    
+    PRODUCTS:\n${productList}\n\nFAQS:\n${faqList}
+    
+    Keep replies SHORT — this is an Instagram DM, 2-3 sentences max.
+    Sound warm and conversational, like texting a helpful friend.`;
+
+    const response = await anthropic.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 300,
+      system: systemPrompt,
+      messages: conversationHistory,
+    });
+
+    let reply = response.content[0].text;
+
+    // Handle handoff trigger
+    if (reply.includes("HANDOFF_READY|")) {
+      const parts = reply.split("HANDOFF_READY|")[1].split("|");
+      await supabase.from("handoff_requests").insert({
+        session_id: senderId,
+        reason: "purchase_intent",
+        status: "pending",
+        customer_name: parts[0] || "",
+        contact_method: parts[2] || "",
+        contact_detail: parts[3] || "",
+        product_interest: parts[4] || "",
+      });
+
+      // Email alert to you
+      await resend.emails.send({
+        from: "onboarding@resend.dev",
+        to: process.env.ALERT_EMAIL,
+        subject: `New Instagram Lead — ${parts[0]}`,
+        text: `Name: ${parts[0]}\nProduct: ${parts[4]}\nContact: ${parts[2]} — ${parts[3]}`,
+      });
+
+      reply = reply.split("HANDOFF_READY|")[0].trim();
+    }
+
+    // Save MAYA's reply to history
+    await supabase.from("chat_messages").insert({
+      session_id: senderId,
+      role: "assistant",
+      content: reply,
+    });
+
+    return reply;
+
+  } catch (err) {
+    console.error("MAYA reply error:", err.message);
+    return "Hey! Thanks for reaching out 👋 I'll have someone from the team get back to you shortly!";
+  }
+}
 
 async function sendReply(recipientId, text) {
   return new Promise((resolve) => {
