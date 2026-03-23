@@ -65,24 +65,40 @@ app.post("/webhook", async (req, res) => {
 });
 
 async function sendReply(recipientId, text) {
-  try {
-    const response = await fetch(
-      `https://graph.instagram.com/v21.0/me/messages`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          recipient: { id: recipientId },
-          message: { text },
-          access_token: IG_ACCESS_TOKEN,
-        }),
-      }
-    );
-    const data = await response.json();
-    console.log("Reply sent:", data);
-  } catch (err) {
-    console.error("Failed to send reply:", err);
-  }
+  return new Promise((resolve) => {
+    const body = JSON.stringify({
+      recipient: { id: recipientId },
+      message: { text },
+    });
+
+    const options = {
+      hostname: "graph.instagram.com",
+      path: `/v21.0/me/messages?access_token=${IG_ACCESS_TOKEN}`,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      },
+    };
+
+    const https = require("https");
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => {
+        console.log("Reply sent:", data);
+        resolve();
+      });
+    });
+
+    req.on("error", (err) => {
+      console.error("Failed to send reply:", err.message);
+      resolve();
+    });
+
+    req.write(body);
+    req.end();
+  });
 }
 
 app.get("/products", async (req, res) => {
