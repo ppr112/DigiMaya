@@ -22,8 +22,10 @@ app.get("/", (req, res) => {
   res.json({ status: "Chatbot backend is running!" });
 });
 
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "maya_verify_token";
-const IG_ACCESS_TOKEN = process.env.IG_ACCESS_TOKEN;
+const VERIFY_TOKEN      = process.env.VERIFY_TOKEN || "maya_verify_token";
+const IG_ACCESS_TOKEN   = process.env.IG_ACCESS_TOKEN;
+const WA_PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
+const WA_ACCESS_TOKEN   = process.env.WA_ACCESS_TOKEN;
 
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -45,23 +47,40 @@ app.post("/webhook", async (req, res) => {
   // Must respond 200 quickly so Meta doesn't retry
   res.sendStatus(200);
 
-  if (body.object !== "instagram") return;
-
-  for (const entry of body.entry || []) {
-    for (const event of entry.messaging || []) {
-      const senderId = event.sender?.id;
-      const messageText = event.message?.text;
-
-      // Ignore messages sent by the bot itself (echo)
-      if (event.message?.is_echo) continue;
-      // Ignore if no text (e.g. stickers, reactions)
-      if (!messageText) continue;
-
-    console.log(`Message from ${senderId}: ${messageText}`);
-
-    const mayaReply = await getMayaReplyForInstagram(senderId, messageText);  // ← ADD THIS
-    await sendReply(senderId, mayaReply);                                       // ← ADD THIS
+  // ── Instagram DMs ────────────────────────────────────────────────
+  if (body.object === "instagram") {
+    for (const entry of body.entry || []) {
+      for (const event of entry.messaging || []) {
+        const senderId   = event.sender?.id;
+        const messageText = event.message?.text;
+        if (event.message?.is_echo) continue;   // ignore bot's own echoes
+        if (!messageText) continue;              // ignore stickers, reactions, etc.
+        console.log(`[Instagram] Message from ${senderId}: ${messageText}`);
+        const mayaReply = await getMayaReplyForInstagram(senderId, messageText);
+        await sendReply(senderId, mayaReply);
+      }
     }
+    return;
+  }
+
+  // ── WhatsApp Business DMs ────────────────────────────────────────
+  if (body.object === "whatsapp_business_account") {
+    for (const entry of body.entry || []) {
+      for (const change of entry.changes || []) {
+        if (change.field !== "messages") continue;
+        const messages = change.value?.messages || [];
+        for (const msg of messages) {
+          if (msg.type !== "text") continue;          // ignore images, docs, stickers
+          const senderPhone = msg.from;               // e.g. "919876543210"
+          const messageText = msg.text?.body;
+          if (!messageText) continue;
+          console.log(`[WhatsApp] Message from ${senderPhone}: ${messageText}`);
+          const mayaReply = await getMayaReplyForWhatsApp(senderPhone, messageText);
+          await sendWhatsAppReply(senderPhone, mayaReply);
+        }
+      }
+    }
+    return;
   }
 });
 
@@ -208,6 +227,160 @@ async function sendReply(recipientId, text) {
 
     req.on("error", (err) => {
       console.error("Failed to send reply:", err.message);
+      resolve();
+    });
+
+    req.write(body);
+    req.end();
+  });
+}
+
+// ── WhatsApp: Maya AI reply ───────────────────────────────────────────────────
+async function getMayaReplyForWhatsApp(senderPhone, messageText) {
+  // Use "wa_" prefix so WhatsApp sessions never collide with Instagram sessions
+  const sessionId = "wa_" + senderPhone;
+
+  try {
+    const { data: recentChats } = await supabase
+      .from("chat_messages")
+      .select("*")
+      .eq("session_id", sessionId)
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    await supabase.from("chat_messages").insert({
+      session_id: sessionId,
+      role: "user",
+      content: messageText,
+    });
+
+    const { data: products } = await supabase.from("products").select("*").eq("in_stock", true);
+    const { data: faqs }     = await supabase.from("faqs").select("*");
+
+    const conversationHistory = recentChats
+      ? recentChats.reverse().map((m) => ({ role: m.role, content: m.content }))
+      : [];
+    conversationHistory.push({ role: "user", content: messageText });
+
+    const productList = products && products.length > 0
+      ? products.map((p) => {
+          const sizes = p.sizes_in_stock && p.sizes_in_stock.length > 0
+            ? `Sizes available: ${p.sizes_in_stock.join(", ")}`
+            : "Currently out of stock in all sizes";
+          return `${p.name} — ₹${p.price}\n  ${p.description}\n  ${sizes}`;
+        }).join("\n\n")
+      : "";
+
+    const faqList = faqs && faqs.length > 0
+      ? faqs.map((f) => `Q: ${f.question}\nA: ${f.answer}`).join("\n\n")
+      : "";
+
+    const systemPrompt = `You are Maya, a warm and stylish pre-sales assistant for an Indian ethnic wear brand. You are replying on WhatsApp — keep messages friendly and concise.
+
+ABOUT THE BUSINESS:
+We sell premium Indian ethnic wear — lehengas, gowns, and festive sets — for weddings, receptions, sangeets, and special occasions. All products are fully stitched, available in sizes S to XXL, with free shipping across India including GST.
+
+PRODUCTS:
+${productList}
+
+FAQS:
+${faqList}
+
+HOW TO HANDLE A CUSTOMER WHO WANTS TO BUY:
+1. First ask their name and what occasion they are shopping for
+2. Then ask how they prefer to be contacted: A. Phone call B. WhatsApp C. Text message D. Email
+3. Then ask for their contact detail (phone number or email)
+4. Then confirm: "Thank you [name]! Our team will [contact method] you at [detail] within minutes!"
+5. End with: HANDOFF_READY|[name]|[occasion]|[contact_method]|[contact_detail]|[product_interest]
+
+IMPORTANT RULES:
+- All prices are in Indian Rupees (₹). Never use $ symbol.
+- Keep replies SHORT — this is WhatsApp, 2-3 sentences max.
+- Sound warm and conversational, like texting a helpful friend.
+- If asked about size, mention sizes run S to XXL and they should check the size chart.
+- If asked about shipping, mention free shipping across India including GST.
+- Wash care: Cindrella Gown is hand wash. All lehengas are dry clean only.
+- Never make up information not in the product list above.`;
+
+    const response = await anthropic.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 300,
+      system: systemPrompt,
+      messages: conversationHistory,
+    });
+
+    let reply = response.content[0].text;
+
+    // Handle handoff trigger
+    if (reply.includes("HANDOFF_READY|")) {
+      const parts = reply.split("HANDOFF_READY|")[1].split("|");
+      await supabase.from("handoff_requests").insert({
+        session_id: sessionId,
+        reason: "purchase_intent",
+        status: "pending",
+        customer_name: parts[0] || "",
+        contact_method: parts[2] || "",
+        contact_detail: parts[3] || "",
+        product_interest: parts[4] || "",
+      });
+
+      await resend.emails.send({
+        from: "onboarding@resend.dev",
+        to: process.env.ALERT_EMAIL,
+        subject: `New WhatsApp Lead — ${parts[0]}`,
+        text: `Name: ${parts[0]}\nProduct: ${parts[4]}\nContact: ${parts[2]} — ${parts[3]}\nWhatsApp: ${senderPhone}`,
+      });
+
+      reply = reply.split("HANDOFF_READY|")[0].trim();
+    }
+
+    await supabase.from("chat_messages").insert({
+      session_id: sessionId,
+      role: "assistant",
+      content: reply,
+    });
+
+    return reply;
+
+  } catch (err) {
+    console.error("MAYA WhatsApp reply error:", err.message);
+    return "Hey! Thanks for reaching out 👋 I'll have someone from our team get back to you shortly!";
+  }
+}
+
+// ── WhatsApp: send reply via Cloud API ───────────────────────────────────────
+async function sendWhatsAppReply(toPhone, text) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({
+      messaging_product: "whatsapp",
+      to: toPhone,
+      type: "text",
+      text: { body: text },
+    });
+
+    const options = {
+      hostname: "graph.facebook.com",
+      path: `/v21.0/${WA_PHONE_NUMBER_ID}/messages`,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+        "Authorization": `Bearer ${WA_ACCESS_TOKEN}`,
+      },
+    };
+
+    const https = require("https");
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => {
+        console.log("WhatsApp reply sent:", data);
+        resolve();
+      });
+    });
+
+    req.on("error", (err) => {
+      console.error("Failed to send WhatsApp reply:", err.message);
       resolve();
     });
 
