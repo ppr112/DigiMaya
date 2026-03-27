@@ -1,4 +1,5 @@
 const express = require("express");
+const path = require("path");
 
 function formatTimestamp(value) {
   return value || null;
@@ -162,102 +163,6 @@ async function buildTenantSnapshot(supabase, tenant) {
   };
 }
 
-function buildDashboardHtml() {
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MAYA Provider Dashboard</title>
-  <style>
-    :root { color-scheme: light; }
-    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; background: #f5f6fa; color: #1d2433; }
-    header { padding: 24px; background: #111827; color: white; }
-    main { padding: 24px; max-width: 1200px; margin: 0 auto; }
-    .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-bottom: 24px; }
-    .card { background: white; border-radius: 16px; padding: 18px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08); }
-    table { width: 100%; border-collapse: collapse; background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08); }
-    th, td { padding: 12px 14px; border-bottom: 1px solid #edf2f7; text-align: left; font-size: 14px; vertical-align: top; }
-    th { background: #f8fafc; font-weight: 600; }
-    .pill { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; }
-    .healthy { background: #dcfce7; color: #166534; }
-    .needs_setup { background: #fef3c7; color: #92400e; }
-    .needs_attention { background: #fee2e2; color: #991b1b; }
-    .warnings { color: #6b7280; font-size: 12px; }
-    .error { color: #991b1b; white-space: pre-wrap; }
-    code { background: #eef2ff; padding: 2px 6px; border-radius: 6px; }
-  </style>
-</head>
-<body>
-  <header>
-    <h1 style="margin:0 0 8px;">MAYA Provider Dashboard</h1>
-    <p style="margin:0; opacity:0.9;">Internal monitoring for tenant health, catalog readiness, message volume, and handoffs.</p>
-  </header>
-  <main>
-    <div id="summary" class="grid"></div>
-    <div id="error" class="error"></div>
-    <table>
-      <thead>
-        <tr>
-          <th>Tenant</th>
-          <th>Health</th>
-          <th>Catalog</th>
-          <th>Messages</th>
-          <th>Handoffs</th>
-          <th>Last Activity</th>
-        </tr>
-      </thead>
-      <tbody id="tenant-rows"></tbody>
-    </table>
-  </main>
-  <script>
-    const token = new URLSearchParams(window.location.search).get("token");
-    const headers = token ? { "x-admin-token": token } : {};
-
-    function renderSummaryCard(label, value) {
-      return '<div class="card"><div style="font-size:13px;color:#6b7280;">' + label + '</div><div style="font-size:28px;font-weight:700;margin-top:8px;">' + value + '</div></div>';
-    }
-
-    function render() {
-      fetch('/admin/overview', { headers })
-        .then(async (response) => {
-          const payload = await response.json();
-          if (!response.ok) throw new Error(payload.error || 'Failed to load dashboard');
-          return payload;
-        })
-        .then((payload) => {
-          document.getElementById('summary').innerHTML = [
-            renderSummaryCard('Tenants', payload.summary.tenants_count),
-            renderSummaryCard('Active Tenants', payload.summary.active_tenants),
-            renderSummaryCard('Products', payload.summary.products_count),
-            renderSummaryCard('FAQs', payload.summary.faqs_count),
-            renderSummaryCard('Messages', payload.summary.messages_count),
-            renderSummaryCard('Pending Handoffs', payload.summary.pending_handoffs)
-          ].join('');
-
-          document.getElementById('tenant-rows').innerHTML = payload.tenants.map((tenant) => {
-            const lastActivity = tenant.messages.lastInboundAt || tenant.messages.lastReplyAt || '-';
-            return '<tr>' +
-              '<td><strong>' + tenant.business_name + '</strong><div class="warnings">' + tenant.id + '</div></td>' +
-              '<td><span class="pill ' + tenant.health.status + '">' + tenant.health.status.replace('_', ' ') + '</span><div class="warnings">' + (tenant.health.warnings.join(', ') || 'No warnings') + '</div></td>' +
-              '<td>' + tenant.catalog.productsCount + ' products<br />' + tenant.catalog.faqsCount + ' FAQs</td>' +
-              '<td>' + tenant.messages.inboundCount + ' inbound<br />' + tenant.messages.outboundCount + ' replies</td>' +
-              '<td>' + tenant.handoffs.pendingHandoffs + ' pending<br />' + tenant.handoffs.totalHandoffs + ' total</td>' +
-              '<td>' + lastActivity + '</td>' +
-            '</tr>';
-          }).join('');
-        })
-        .catch((error) => {
-          document.getElementById('error').textContent = error.message + '\\n\\nOpen this page with ?token=YOUR_ADMIN_API_TOKEN or send x-admin-token / Bearer token headers.';
-        });
-    }
-
-    render();
-  </script>
-</body>
-</html>`;
-}
-
 function buildSheetsExportPayload({ summary, tenants }) {
   const exportedAt = new Date().toISOString();
 
@@ -332,9 +237,20 @@ function buildSheetsExportPayload({ summary, tenants }) {
 
 function createProviderAdminRouter({ supabase }) {
   const router = express.Router();
+  const dashboardHtmlPath = path.join(__dirname, "provider-dashboard.html");
+  const dashboardCssPath = path.join(__dirname, "provider-dashboard.css");
+  const dashboardJsPath = path.join(__dirname, "provider-dashboard.js");
 
   router.get("/dashboard", (req, res) => {
-    res.type("html").send(buildDashboardHtml());
+    res.sendFile(dashboardHtmlPath);
+  });
+
+  router.get("/assets/dashboard.css", (req, res) => {
+    res.type("text/css").sendFile(dashboardCssPath);
+  });
+
+  router.get("/assets/dashboard.js", (req, res) => {
+    res.type("application/javascript").sendFile(dashboardJsPath);
   });
 
   router.use(requireAdminToken);

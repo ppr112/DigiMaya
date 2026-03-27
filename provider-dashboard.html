@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MAYA Operator Dashboard</title>
+  <link rel="stylesheet" href="/admin/assets/dashboard.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="eyebrow">Operator Console</div>
+        <h1>MAYA Dashboard</h1>
+        <p>Monitor tenants, handoffs, and reply health across your service.</p>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-section="overview">Overview</button>
+        <button class="nav-item" data-section="tenants">Tenants</button>
+        <button class="nav-item" data-section="handoffs">Handoffs</button>
+        <button class="nav-item" data-section="activity">Activity</button>
+      </nav>
+
+      <div class="sidebar-card">
+        <div class="sidebar-label">Auth</div>
+        <div id="auth-status" class="sidebar-value">Checking token...</div>
+        <div class="sidebar-help">Pass the dashboard token in the URL as <code>?token=...</code>.</div>
+      </div>
+
+      <div class="sidebar-card">
+        <div class="sidebar-label">Views</div>
+        <div class="sidebar-help">This dashboard uses the live admin API as source of truth, so Sheets and web views stay aligned.</div>
+      </div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">Service Provider View</div>
+          <h2>Professional Monitoring Dashboard</h2>
+        </div>
+        <div class="topbar-actions">
+          <button id="refresh-button" class="button-primary">Refresh Data</button>
+        </div>
+      </header>
+
+      <section id="error-banner" class="error-banner hidden"></section>
+
+      <section class="panel visible" data-panel="overview">
+        <div id="summary-grid" class="summary-grid"></div>
+        <div class="two-column">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="eyebrow">Tenant Health</div>
+                <h3>Attention Snapshot</h3>
+              </div>
+            </div>
+            <div id="health-list" class="health-list"></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="eyebrow">Recent Handoffs</div>
+                <h3>Escalation Queue</h3>
+              </div>
+            </div>
+            <div id="handoff-preview" class="list-table compact-table"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" data-panel="tenants">
+        <div class="two-column tenant-layout">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="eyebrow">All Tenants</div>
+                <h3>Tenant Directory</h3>
+              </div>
+            </div>
+            <div id="tenants-table" class="list-table"></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="eyebrow">Tenant Detail</div>
+                <h3 id="tenant-detail-title">Select a Tenant</h3>
+              </div>
+            </div>
+            <div id="tenant-detail" class="tenant-detail empty-state">
+              Choose a tenant to view catalog readiness, recent messages, and handoff context.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" data-panel="handoffs">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="eyebrow">Queue Management</div>
+              <h3>Recent Handoffs</h3>
+            </div>
+          </div>
+          <div id="handoffs-table" class="list-table"></div>
+        </div>
+      </section>
+
+      <section class="panel" data-panel="activity">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="eyebrow">Live Feed</div>
+              <h3>Recent Tenant Activity</h3>
+            </div>
+          </div>
+          <div id="activity-table" class="list-table"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/admin/assets/dashboard.js"></script>
+</body>
+</html>
