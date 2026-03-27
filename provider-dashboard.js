@@ -1,0 +1,311 @@
+(function () {
+  const token = new URLSearchParams(window.location.search).get("token");
+  const headers = token ? { "x-admin-token": token } : {};
+
+  const state = {
+    overview: null,
+    handoffs: [],
+    activity: [],
+    selectedTenantId: null
+  };
+
+  const errorBanner = document.getElementById("error-banner");
+  const authStatus = document.getElementById("auth-status");
+
+  function setError(message) {
+    if (!message) {
+      errorBanner.classList.add("hidden");
+      errorBanner.textContent = "";
+      return;
+    }
+
+    errorBanner.textContent = message;
+    errorBanner.classList.remove("hidden");
+  }
+
+  function formatDate(value) {
+    if (!value) {
+      return "—";
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return value;
+    }
+
+    return date.toLocaleString();
+  }
+
+  function fetchJson(path) {
+    return fetch(path, { headers }).then(async (response) => {
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || ("Request failed: " + response.status));
+      }
+      return payload;
+    });
+  }
+
+  function renderSummaryCards(summary) {
+    const summaryGrid = document.getElementById("summary-grid");
+    const cards = [
+      ["Tenants", summary.tenants_count, "Connected businesses managed by your service"],
+      ["Active Tenants", summary.active_tenants, "Tenants currently marked active"],
+      ["Products", summary.products_count, "Catalog entries across all tenants"],
+      ["FAQs", summary.faqs_count, "Knowledge base entries across all tenants"],
+      ["Messages", summary.messages_count, "Tracked messages currently in the backend"],
+      ["Pending Handoffs", summary.pending_handoffs, "Customer conversations waiting for manual follow-up"]
+    ];
+
+    summaryGrid.innerHTML = cards.map(function ([label, value, note]) {
+      return '<div class="summary-card">' +
+        '<div class="eyebrow">' + label + '</div>' +
+        '<div class="summary-value">' + value + '</div>' +
+        '<div class="summary-note">' + note + '</div>' +
+      '</div>';
+    }).join("");
+  }
+
+  function renderHealthList(tenants) {
+    const healthList = document.getElementById("health-list");
+    const needsAttention = tenants.filter((tenant) => tenant.health.status !== "healthy");
+
+    if (needsAttention.length === 0) {
+      healthList.innerHTML = '<div class="empty-state">All tenants look healthy right now.</div>';
+      return;
+    }
+
+    healthList.innerHTML = needsAttention.map((tenant) => {
+      return '<div class="health-item">' +
+        '<div class="tenant-name">' + tenant.business_name + '</div>' +
+        '<div style="margin-top:8px;"><span class="status-pill ' + tenant.health.status + '">' + tenant.health.status.replace(/_/g, " ") + '</span></div>' +
+        '<div class="subtext" style="margin-top:10px;">Warnings: ' + (tenant.health.warnings.join(", ") || "None") + '</div>' +
+      '</div>';
+    }).join("");
+  }
+
+  function renderPreviewTable(targetId, rows, columns, emptyMessage) {
+    const target = document.getElementById(targetId);
+    if (!rows || rows.length === 0) {
+      target.innerHTML = '<div class="empty-state">' + emptyMessage + '</div>';
+      return;
+    }
+
+    const header = '<thead><tr>' + columns.map((column) => '<th>' + column.label + '</th>').join("") + '</tr></thead>';
+    const body = '<tbody>' + rows.map((row) => {
+      return '<tr>' + columns.map((column) => '<td>' + column.render(row) + '</td>').join("") + '</tr>';
+    }).join("") + '</tbody>';
+
+    target.innerHTML = '<table>' + header + body + '</table>';
+  }
+
+  function renderTenantsTable(tenants) {
+    renderPreviewTable(
+      "tenants-table",
+      tenants,
+      [
+        { label: "Tenant", render: (tenant) => '<div class="tenant-name">' + tenant.business_name + '</div><div class="subtext">' + tenant.id + '</div>' },
+        { label: "Health", render: (tenant) => '<span class="status-pill ' + tenant.health.status + '">' + tenant.health.status.replace(/_/g, " ") + '</span><div class="subtext">' + (tenant.health.warnings.join(", ") || "No warnings") + '</div>' },
+        { label: "Catalog", render: (tenant) => tenant.catalog.productsCount + ' products<br />' + tenant.catalog.faqsCount + ' FAQs' },
+        { label: "Messages", render: (tenant) => tenant.messages.inboundCount + ' inbound<br />' + tenant.messages.outboundCount + ' replies' },
+        { label: "Handoffs", render: (tenant) => tenant.handoffs.pendingHandoffs + ' pending<br />' + tenant.handoffs.totalHandoffs + ' total' },
+        { label: "Last Activity", render: (tenant) => formatDate(tenant.messages.lastInboundAt || tenant.messages.lastReplyAt) }
+      ],
+      "No tenants found."
+    );
+
+    const table = document.querySelector("#tenants-table table");
+    if (!table) {
+      return;
+    }
+
+    const bodyRows = Array.from(table.querySelectorAll("tbody tr"));
+    bodyRows.forEach((row, index) => {
+      row.classList.add("tenant-row");
+      row.addEventListener("click", function () {
+        loadTenantDetail(tenants[index].id);
+      });
+    });
+  }
+
+  function renderTenantDetail(payload) {
+    const container = document.getElementById("tenant-detail");
+    const title = document.getElementById("tenant-detail-title");
+    const tenant = payload.tenant;
+    title.textContent = tenant.business_name;
+
+    container.classList.remove("empty-state");
+    container.innerHTML =
+      '<div class="tenant-detail-grid">' +
+        renderDetailChip("Health", tenant.health.status.replace(/_/g, " ")) +
+        renderDetailChip("Products", tenant.catalog.productsCount) +
+        renderDetailChip("FAQs", tenant.catalog.faqsCount) +
+        renderDetailChip("Pending Handoffs", tenant.handoffs.pendingHandoffs) +
+        renderDetailChip("Inbound", tenant.messages.inboundCount) +
+        renderDetailChip("Replies", tenant.messages.outboundCount) +
+      '</div>' +
+      '<div class="subtext">Warnings: ' + (tenant.health.warnings.join(", ") || "No warnings") + '</div>' +
+      '<div class="detail-section">' +
+        '<h4>Recent Messages</h4>' +
+        buildMiniTable(payload.recent_messages, [
+          { label: "When", render: (row) => formatDate(row.created_at) },
+          { label: "Role", render: (row) => row.role },
+          { label: "Content", render: (row) => escapeHtml(String(row.content || "")).slice(0, 180) }
+        ], "No recent messages with tenant attribution yet.") +
+      '</div>' +
+      '<div class="detail-section">' +
+        '<h4>Recent Handoffs</h4>' +
+        buildMiniTable(payload.recent_handoffs, [
+          { label: "When", render: (row) => formatDate(row.created_at) },
+          { label: "Reason", render: (row) => row.reason || "—" },
+          { label: "Status", render: (row) => row.status || "—" },
+          { label: "Product", render: (row) => escapeHtml(String(row.product_interest || "—")) }
+        ], "No handoffs for this tenant yet.") +
+      '</div>' +
+      '<div class="detail-section">' +
+        '<h4>Catalog Snapshot</h4>' +
+        buildMiniTable(payload.products, [
+          { label: "Product", render: (row) => escapeHtml(row.name) },
+          { label: "Price", render: (row) => row.price },
+          { label: "Stock", render: (row) => row.in_stock ? "In stock" : "Out of stock" },
+          { label: "Link", render: (row) => row.product_url ? '<a href="' + row.product_url + '" target="_blank" rel="noreferrer">Open</a>' : "—" }
+        ], "No products loaded for this tenant.") +
+      '</div>';
+  }
+
+  function renderDetailChip(label, value) {
+    return '<div class="detail-chip"><span class="label">' + label + '</span><span class="value">' + value + '</span></div>';
+  }
+
+  function buildMiniTable(rows, columns, emptyMessage) {
+    if (!rows || rows.length === 0) {
+      return '<div class="empty-state">' + emptyMessage + '</div>';
+    }
+
+    return '<div class="list-table compact-table"><table><thead><tr>' +
+      columns.map((column) => '<th>' + column.label + '</th>').join("") +
+      '</tr></thead><tbody>' +
+      rows.map((row) => '<tr>' + columns.map((column) => '<td>' + column.render(row) + '</td>').join("") + '</tr>').join("") +
+      '</tbody></table></div>';
+  }
+
+  function escapeHtml(value) {
+    return value
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function renderHandoffs(rows) {
+    renderPreviewTable(
+      "handoffs-table",
+      rows,
+      [
+        { label: "When", render: (row) => formatDate(row.created_at) },
+        { label: "Session", render: (row) => row.session_id || "—" },
+        { label: "Reason", render: (row) => row.reason || "—" },
+        { label: "Status", render: (row) => row.status || "—" },
+        { label: "Product", render: (row) => escapeHtml(String(row.product_interest || "—")) },
+        { label: "Contact", render: (row) => escapeHtml(String(row.contact_detail || "—")) }
+      ],
+      "No handoffs yet."
+    );
+  }
+
+  function renderActivity(rows) {
+    renderPreviewTable(
+      "activity-table",
+      rows,
+      [
+        { label: "When", render: (row) => formatDate(row.created_at) },
+        { label: "Tenant", render: (row) => row.tenant_id || "—" },
+        { label: "Session", render: (row) => row.session_id || "—" },
+        { label: "Role", render: (row) => row.role || "—" },
+        { label: "Content", render: (row) => escapeHtml(String(row.content || "")).slice(0, 180) }
+      ],
+      "No recent activity yet."
+    );
+  }
+
+  function switchPanel(section) {
+    document.querySelectorAll(".nav-item").forEach((button) => {
+      button.classList.toggle("active", button.dataset.section === section);
+    });
+
+    document.querySelectorAll(".panel").forEach((panel) => {
+      panel.classList.toggle("visible", panel.dataset.panel === section);
+    });
+  }
+
+  function wireNavigation() {
+    document.querySelectorAll(".nav-item").forEach((button) => {
+      button.addEventListener("click", function () {
+        switchPanel(button.dataset.section);
+      });
+    });
+  }
+
+  function wireRefresh() {
+    document.getElementById("refresh-button").addEventListener("click", function () {
+      loadAll();
+    });
+  }
+
+  async function loadTenantDetail(tenantId) {
+    try {
+      state.selectedTenantId = tenantId;
+      const payload = await fetchJson("/admin/tenants/" + tenantId);
+      renderTenantDetail(payload);
+    } catch (error) {
+      setError(error.message);
+    }
+  }
+
+  async function loadAll() {
+    try {
+      setError("");
+      authStatus.textContent = token ? "Token detected" : "Token missing";
+
+      const [overview, handoffs, activity] = await Promise.all([
+        fetchJson("/admin/overview"),
+        fetchJson("/admin/handoffs"),
+        fetchJson("/admin/activity")
+      ]);
+
+      state.overview = overview;
+      state.handoffs = handoffs.handoffs || [];
+      state.activity = activity.messages || [];
+
+      renderSummaryCards(overview.summary);
+      renderHealthList(overview.tenants);
+      renderTenantsTable(overview.tenants);
+      renderHandoffs(state.handoffs.slice(0, 20));
+      renderActivity(state.activity.slice(0, 40));
+      renderPreviewTable(
+        "handoff-preview",
+        state.handoffs.slice(0, 5),
+        [
+          { label: "Tenant", render: (row) => row.tenant_id || "—" },
+          { label: "Reason", render: (row) => row.reason || "—" },
+          { label: "Status", render: (row) => row.status || "—" }
+        ],
+        "No handoffs yet."
+      );
+
+      if (!state.selectedTenantId && overview.tenants[0]) {
+        await loadTenantDetail(overview.tenants[0].id);
+      } else if (state.selectedTenantId) {
+        await loadTenantDetail(state.selectedTenantId);
+      }
+    } catch (error) {
+      setError(error.message + "\n\nOpen this page with ?token=YOUR_ADMIN_API_TOKEN or use the x-admin-token header.");
+      authStatus.textContent = "Check token";
+    }
+  }
+
+  wireNavigation();
+  wireRefresh();
+  loadAll();
+})();
