@@ -950,6 +950,84 @@ function buildClientPortalHtml() {
       white-space: pre-wrap;
     }
     .error.visible { display: block; }
+    .progress-strip {
+      margin-bottom: 18px;
+      padding: 18px;
+      border-radius: 22px;
+      background: linear-gradient(180deg, #fdfbff 0%, #f4efff 100%);
+      border: 1px solid #e6defa;
+      box-shadow: var(--shadow);
+      display: grid;
+      gap: 14px;
+    }
+    .progress-strip.hidden { display: none; }
+    .progress-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .progress-copy h3 {
+      margin: 4px 0 0;
+      font-size: 22px;
+    }
+    .progress-copy p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .progress-meter {
+      display: grid;
+      gap: 8px;
+    }
+    .progress-bar {
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      background: #ebe4fa;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #8b7ad9 0%, #7464c7 100%);
+      transition: width 0.25s ease;
+    }
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .progress-checklist {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .progress-check {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: white;
+      padding: 14px;
+      display: grid;
+      gap: 6px;
+    }
+    .progress-check .label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+    }
+    .progress-check .value {
+      font-size: 15px;
+      font-weight: 700;
+    }
     .form-head {
       display: grid;
       gap: 6px;
@@ -1302,6 +1380,7 @@ function buildClientPortalHtml() {
       </header>
 
       <div id="error" class="error"></div>
+      <section id="onboarding-progress-strip" class="progress-strip hidden"></section>
 
       <section class="panel visible" data-panel="overview">
         <div id="metrics" class="grid"></div>
@@ -1673,6 +1752,96 @@ function buildClientPortalHtml() {
         );
       }
 
+      function renderOnboardingProgressStrip() {
+        const strip = document.getElementById("onboarding-progress-strip");
+        const tenant = state.overview?.tenant;
+
+        if (!tenant) {
+          strip.classList.add("hidden");
+          strip.innerHTML = "";
+          return;
+        }
+
+        const checklist = [
+          ["Business Profile", Boolean(tenant.business_name && tenant.owner_name && tenant.owner_email)],
+          ["Instagram Setup Started", Boolean(tenant.instagram_connection_status && tenant.instagram_connection_status !== "not_started") || Boolean(tenant.connect_instagram_requested)],
+          ["Instagram Connected", Boolean(tenant.instagram_connected)],
+          ["Admin Confirmed", Boolean(tenant.admin_connection_confirmed)],
+          ["Client Confirmed", Boolean(tenant.client_connection_confirmed)],
+          ["Availability Set", Boolean(tenant.response_window_start && tenant.response_window_end)],
+          ["Catalog Ready", Number(state.overview?.metrics?.products_count || 0) > 0],
+          ["FAQs Ready", Number(state.overview?.metrics?.faqs_count || 0) > 0]
+        ];
+
+        const completed = checklist.filter((item) => item[1]).length;
+        const total = checklist.length;
+        const progress = Math.round((completed / total) * 100);
+        const isActive = tenant.activation_status === "active";
+
+        if (isActive) {
+          strip.classList.remove("hidden");
+          strip.innerHTML =
+            '<div class="progress-top">' +
+              '<div class="progress-copy">' +
+                '<div class="eyebrow">Workspace Status</div>' +
+                '<h3>DigiMaya is live for your business</h3>' +
+                '<p>Your setup is complete and your workspace is active. You can now focus on conversations, leads, and improving your catalog over time.</p>' +
+              '</div>' +
+              '<span class="status-pill">Active</span>' +
+            '</div>' +
+            '<div class="progress-bar"><div class="progress-fill" style="width: 100%;"></div></div>' +
+            '<div class="progress-meta"><span>100% complete</span><span>All core setup steps are done</span></div>';
+          return;
+        }
+
+        strip.classList.remove("hidden");
+        strip.innerHTML =
+          '<div class="progress-top">' +
+            '<div class="progress-copy">' +
+              '<div class="eyebrow">Workspace Progress</div>' +
+              '<h3>Your DigiMaya setup is ' + progress + '% complete</h3>' +
+              '<p>' + progressStripMessage(tenant) + '</p>' +
+            '</div>' +
+            '<span class="status-pill">' + escapeHtml(String(tenant.activation_status || "setup_incomplete")).replaceAll("_", " ") + '</span>' +
+          '</div>' +
+          '<div class="progress-meter">' +
+            '<div class="progress-bar"><div class="progress-fill" style="width: ' + progress + '%;"></div></div>' +
+            '<div class="progress-meta"><span>' + completed + ' of ' + total + ' setup steps complete</span><span>Finish the remaining items to go fully live</span></div>' +
+          '</div>' +
+          '<div class="progress-checklist">' +
+            checklist.map((item) => (
+              '<div class="progress-check">' +
+                '<div class="label">' + item[0] + '</div>' +
+                '<div class="value">' + (item[1] ? "Complete" : "Pending") + '</div>' +
+              '</div>'
+            )).join("") +
+          '</div>';
+      }
+
+      function progressStripMessage(tenant) {
+        if (!tenant.instagram_connected) {
+          return "Connect your Instagram account and finish the confirmation steps so DigiMaya can begin handling live business messages.";
+        }
+
+        if (!tenant.admin_connection_confirmed) {
+          return "Your Instagram connection is in place. DigiMaya is now waiting for an admin check before your workspace can move forward.";
+        }
+
+        if (!tenant.client_connection_confirmed) {
+          return "Your admin confirmation is complete. Confirm the connection from your side to activate your workspace.";
+        }
+
+        if (!(tenant.response_window_start && tenant.response_window_end)) {
+          return "Set your availability window so DigiMaya knows when your team is available to respond to leads.";
+        }
+
+        if (Number(state.overview?.metrics?.products_count || 0) === 0 || Number(state.overview?.metrics?.faqs_count || 0) === 0) {
+          return "Add at least one product and one FAQ so DigiMaya can answer customers with the right business context.";
+        }
+
+        return "Your setup is nearly complete. Review the remaining items and activate your workspace when you’re ready.";
+      }
+
       function resetManagedProductForm() {
         document.getElementById("catalog-management-form").reset();
         document.getElementById("manage-product-id").value = "";
@@ -1882,6 +2051,7 @@ function buildClientPortalHtml() {
 
         syncSettingsFields(state.overview.tenant);
         renderOverview();
+        renderOnboardingProgressStrip();
         renderConversations();
         renderLeads();
         renderPerformance();
