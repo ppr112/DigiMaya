@@ -417,8 +417,8 @@ function buildClientPortalHtml() {
     .auth-vertical {
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      font-size: 34px;
+      gap: 14px;
+      font-size: 42px;
       line-height: 0.88;
       font-weight: 900;
       letter-spacing: -0.08em;
@@ -428,8 +428,8 @@ function buildClientPortalHtml() {
     .auth-vertical span {
       display: grid;
       place-items: center;
-      width: 92px;
-      height: 76px;
+      width: 74px;
+      height: 74px;
       border-radius: 22px;
       background: rgba(255,255,255,0.92);
       border: 1px solid #e6dbfb;
