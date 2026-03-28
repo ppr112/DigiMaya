@@ -316,6 +316,20 @@
     });
   }
 
+  function wireAutoRefresh() {
+    window.setInterval(function () {
+      if (!document.hidden) {
+        loadAll();
+      }
+    }, 15000);
+
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) {
+        loadAll();
+      }
+    });
+  }
+
   async function loadTenantDetail(tenantId) {
     try {
       state.selectedTenantId = tenantId;
@@ -374,5 +388,6 @@
 
   wireNavigation();
   wireRefresh();
+  wireAutoRefresh();
   loadAll();
 })();

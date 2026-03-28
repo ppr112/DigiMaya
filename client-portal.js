@@ -2007,6 +2007,9 @@ function buildClientPortalHtml() {
             '<div class="progress-bar"><div class="progress-fill" style="width: ' + progress + '%;"></div></div>' +
             '<div class="progress-meta"><span>' + completed + ' of ' + total + ' setup steps complete</span><span>Finish the remaining items to go fully live</span></div>' +
           '</div>' +
+          (tenant.admin_connection_confirmed && !tenant.client_connection_confirmed
+            ? '<div class="inline-actions"><button id="progress-confirm-connection" class="primary-btn" type="button">Confirm Connection</button></div>'
+            : '') +
           '<div class="progress-checklist">' +
             checklist.map((item) => (
               '<div class="progress-check">' +
@@ -2659,6 +2662,24 @@ function buildClientPortalHtml() {
           await loadSession();
         } catch (error) {
           setOnboardingMessage(error.message, "error");
+        }
+      });
+
+      document.getElementById("onboarding-progress-strip").addEventListener("click", async function (event) {
+        const button = event.target.closest("#progress-confirm-connection");
+        if (!button) {
+          return;
+        }
+
+        try {
+          button.disabled = true;
+          button.textContent = "Confirming...";
+          await postJson("/client/onboarding/confirm-connection");
+          await loadSession();
+        } catch (error) {
+          setError(error.message);
+          button.disabled = false;
+          button.textContent = "Confirm Connection";
         }
       });
 
