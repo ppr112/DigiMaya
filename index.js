@@ -8,6 +8,8 @@ const { connectCall } = require("./call-agent");
 const { router: smsAgent, init: initSmsAgent } = require("./sms-agent");
 const { createProviderAdminRouter } = require("./provider-admin");
 const { createClientPortalRouter } = require("./client-portal");
+const { createShopifyWebhookRouter } = require("./shopify-webhooks");
+const { createTenantShopifyCartFromIntent } = require("./shopify-service");
 const {
   buildMayaSystemPrompt,
   findMatchingProducts,
@@ -17,8 +19,6 @@ const {
 
 const app = express();
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
 
 const supabaseKey =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
@@ -31,6 +31,10 @@ if (!supabaseKey) {
 const supabase = createClient(process.env.SUPABASE_URL, supabaseKey);
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const resend = new Resend(process.env.RESEND_API_KEY);
+
+app.use("/webhooks", createShopifyWebhookRouter({ supabase }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 initSmsAgent(supabase, anthropic, require("twilio")(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN));
 app.use("/admin", createProviderAdminRouter({ supabase }));
@@ -200,6 +204,36 @@ function parsePurchaseIntentPayload(reply) {
     productInterest: parts[4] || "",
     quantity: parseQuantity(parts[5])
   };
+}
+
+function parseShoppingIntentPayload(reply) {
+  const match = String(reply || "").match(/SHOPPING_INTENT_JSON:(\{[\s\S]*\})\s*$/);
+  if (!match) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(match[1]);
+    return {
+      action: String(parsed.action || "").trim(),
+      productInterest: String(parsed.product_interest || "").trim(),
+      quantity: parseQuantity(parsed.quantity),
+      customerName: String(parsed.customer_name || "").trim(),
+      occasion: String(parsed.occasion || "").trim(),
+      contactMethod: String(parsed.contact_method || "").trim(),
+      contactDetail: String(parsed.contact_detail || "").trim()
+    };
+  } catch (error) {
+    console.error("Shopping intent parse error:", error.message);
+    return null;
+  }
+}
+
+function stripAssistantControlMarkers(reply) {
+  return String(reply || "")
+    .replace(/HANDOFF_READY\|[^\n]*/g, "")
+    .replace(/SHOPPING_INTENT_JSON:(\{[\s\S]*\})\s*$/g, "")
+    .trim();
 }
 
 function normalizeLookupText(value) {
@@ -500,6 +534,107 @@ async function upsertDraftOrder({ tenant, sessionId, channel, latestMessage, int
   }
 }
 
+function tenantSupportsShopifyCheckout(tenant) {
+  return Boolean(tenant?.shopify_store_domain && tenant?.shopify_storefront_access_token);
+}
+
+function buildShopifyCheckoutReply(order, checkoutUrl, cart) {
+  const orderLabel = order.order_reference || "your order";
+  const totalLabel = cart?.total_amount && cart?.currency_code
+    ? `${cart.currency_code} ${Number(cart.total_amount).toFixed(2)}`
+    : order.total_amount && order.currency_code
+      ? `${order.currency_code} ${Number(order.total_amount).toFixed(2)}`
+      : "the total shown at checkout";
+
+  return `Your order ${orderLabel} is ready for checkout. Complete it here: ${checkoutUrl}\n\nDigiMaya has prepared your cart and the total is ${totalLabel}.`;
+}
+
+async function maybeCreateShopifyCheckout({
+  tenant,
+  sessionId,
+  channel,
+  latestMessage,
+  orderIntent,
+  shoppingIntent
+}) {
+  if (!tenantSupportsShopifyCheckout(tenant)) {
+    return { success: false, reason: "shopify_not_configured" };
+  }
+
+  if (!shoppingIntent || shoppingIntent.action !== "create_checkout") {
+    return { success: false, reason: "no_checkout_action" };
+  }
+
+  const normalizedIntent = {
+    customerName: shoppingIntent.customerName || orderIntent?.customerName || "",
+    occasion: shoppingIntent.occasion || orderIntent?.occasion || "",
+    contactMethod: shoppingIntent.contactMethod || orderIntent?.contactMethod || "",
+    contactDetail: shoppingIntent.contactDetail || orderIntent?.contactDetail || "",
+    productInterest: shoppingIntent.productInterest || orderIntent?.productInterest || "",
+    quantity: shoppingIntent.quantity || orderIntent?.quantity || 1
+  };
+
+  if (!normalizedIntent.productInterest) {
+    return { success: false, reason: "missing_product_interest" };
+  }
+
+  const savedOrderIntent = await upsertOrderIntent({
+    tenant,
+    sessionId,
+    channel,
+    latestMessage,
+    intent: normalizedIntent
+  });
+
+  const savedOrder = await upsertDraftOrder({
+    tenant,
+    sessionId,
+    channel,
+    latestMessage,
+    intent: normalizedIntent,
+    orderIntentId: savedOrderIntent?.id
+  });
+
+  if (!savedOrder?.id) {
+    return { success: false, reason: "draft_order_failed" };
+  }
+
+  try {
+    const checkout = await createTenantShopifyCartFromIntent({
+      supabase,
+      tenantId: tenant.id,
+      orderId: savedOrder.id,
+      sessionId,
+      channel
+      ,
+      productInterest: normalizedIntent.productInterest,
+      quantity: normalizedIntent.quantity
+    });
+
+    if (!checkout?.cart?.shopify_checkout_url) {
+      return { success: false, reason: "missing_checkout_url", order: savedOrder };
+    }
+
+    await supabase
+      .from("orders")
+      .update({
+        status: "checkout_ready",
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", savedOrder.id);
+
+    return {
+      success: true,
+      order: checkout.order || savedOrder,
+      cart: checkout.cart,
+      checkoutUrl: checkout.cart.shopify_checkout_url
+    };
+  } catch (error) {
+    console.error("Shopify checkout creation error:", error.message);
+    return { success: false, reason: error.message, order: savedOrder };
+  }
+}
+
 async function maybeCreateHotLeadAlert({ sessionId, tenant, latestMessage, recentChats, matchedProducts, channel }) {
   const totalTurns = (recentChats?.length || 0) + 1;
   const signalCount = countLeadSignals(latestMessage);
@@ -716,10 +851,43 @@ async function getMayaReplyForInstagram(senderId, messageText, tenant) {
     });
 
     let reply = response.content[0].text;
-
-    // Handle handoff trigger
+    const shoppingIntent = parseShoppingIntentPayload(reply);
     const orderIntent = parsePurchaseIntentPayload(reply);
-    if (orderIntent) {
+    const cleanReply = stripAssistantControlMarkers(reply);
+
+    if (shoppingIntent?.action === "create_checkout") {
+      const checkout = await maybeCreateShopifyCheckout({
+        tenant,
+        sessionId: senderId,
+        channel: "instagram",
+        latestMessage: messageText,
+        orderIntent,
+        shoppingIntent
+      });
+
+      if (checkout.success && checkout.checkoutUrl) {
+        reply = buildShopifyCheckoutReply(checkout.order, checkout.checkoutUrl, checkout.cart);
+      } else if (orderIntent) {
+        const savedOrderIntent = await upsertOrderIntent({
+          tenant,
+          sessionId: senderId,
+          channel: "instagram",
+          latestMessage: messageText,
+          intent: orderIntent
+        });
+        await upsertDraftOrder({
+          tenant,
+          sessionId: senderId,
+          channel: "instagram",
+          latestMessage: messageText,
+          intent: orderIntent,
+          orderIntentId: savedOrderIntent?.id
+        });
+        reply = applyLeadAvailabilityReply(cleanReply, tenant);
+      } else {
+        reply = applyLeadAvailabilityReply(cleanReply, tenant);
+      }
+    } else if (orderIntent) {
       const savedOrderIntent = await upsertOrderIntent({
         tenant,
         sessionId: senderId,
@@ -735,7 +903,7 @@ async function getMayaReplyForInstagram(senderId, messageText, tenant) {
         intent: orderIntent,
         orderIntentId: savedOrderIntent?.id
       });
-      reply = applyLeadAvailabilityReply(reply.split("HANDOFF_READY|")[0].trim(), tenant);
+      reply = applyLeadAvailabilityReply(cleanReply, tenant);
     }
 
     // Save MAYA's reply to history
@@ -864,10 +1032,43 @@ async function getMayaReplyForWhatsApp(senderPhone, messageText, tenant) {
     });
 
     let reply = response.content[0].text;
-
-    // Handle handoff trigger
+    const shoppingIntent = parseShoppingIntentPayload(reply);
     const orderIntent = parsePurchaseIntentPayload(reply);
-    if (orderIntent) {
+    const cleanReply = stripAssistantControlMarkers(reply);
+
+    if (shoppingIntent?.action === "create_checkout") {
+      const checkout = await maybeCreateShopifyCheckout({
+        tenant,
+        sessionId,
+        channel: "whatsapp",
+        latestMessage: messageText,
+        orderIntent,
+        shoppingIntent
+      });
+
+      if (checkout.success && checkout.checkoutUrl) {
+        reply = buildShopifyCheckoutReply(checkout.order, checkout.checkoutUrl, checkout.cart);
+      } else if (orderIntent) {
+        const savedOrderIntent = await upsertOrderIntent({
+          tenant,
+          sessionId,
+          channel: "whatsapp",
+          latestMessage: messageText,
+          intent: orderIntent
+        });
+        await upsertDraftOrder({
+          tenant,
+          sessionId,
+          channel: "whatsapp",
+          latestMessage: messageText,
+          intent: orderIntent,
+          orderIntentId: savedOrderIntent?.id
+        });
+        reply = applyLeadAvailabilityReply(cleanReply, tenant);
+      } else {
+        reply = applyLeadAvailabilityReply(cleanReply, tenant);
+      }
+    } else if (orderIntent) {
       const savedOrderIntent = await upsertOrderIntent({
         tenant,
         sessionId,
@@ -883,7 +1084,7 @@ async function getMayaReplyForWhatsApp(senderPhone, messageText, tenant) {
         intent: orderIntent,
         orderIntentId: savedOrderIntent?.id
       });
-      reply = applyLeadAvailabilityReply(reply.split("HANDOFF_READY|")[0].trim(), tenant);
+      reply = applyLeadAvailabilityReply(cleanReply, tenant);
     }
 
     await supabase.from("chat_messages").insert({

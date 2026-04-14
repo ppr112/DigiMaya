@@ -383,6 +383,7 @@ function buildMayaSystemPrompt({ products, faqs, contextLabel, recentChats, late
   const matchedProductText = matchedProducts.length > 0
     ? matchedProducts.slice(0, 3).map((product) => `${product.name} = ${formatMoney(product.price, currency)}`).join(" | ")
     : "none";
+  const shopifyCheckoutReady = Boolean(tenant?.shopify_store_domain && tenant?.shopify_storefront_access_token);
 
   return [
     "You are MAYA, a warm sales assistant for this business.",
@@ -407,6 +408,9 @@ function buildMayaSystemPrompt({ products, faqs, contextLabel, recentChats, late
     "If the customer asks for custom design, unusual discount, negotiation, complaint handling, or something unclear after repeated back-and-forth, hand off to the team.",
     "If human handoff is needed, end with HUMAN_HANDOFF|[session_id].",
     "If the customer is ready to buy, collect name, occasion, preferred contact method, then contact detail, confirm quantity, and end with HANDOFF_READY|[name]|[occasion]|[contact_method]|[contact_detail]|[product_interest]|[quantity]. Use quantity 1 if they do not specify a number.",
+    shopifyCheckoutReady
+      ? 'If the tenant has Shopify checkout available and the customer is clearly ready to check out, end with SHOPPING_INTENT_JSON:{"action":"create_checkout","product_interest":"...","quantity":1,"customer_name":"...","occasion":"...","contact_method":"...","contact_detail":"..."} on its own final line. Keep it valid JSON and use the same details already collected in the conversation.'
+      : "Do not mention Shopify or checkout links unless the backend confirms this tenant is ready for that flow.",
     `Inferred stage: ${inferredStage}.`,
     `Known budget: ${inferredBudget || "unknown"}.`,
     `Known style: ${inferredStyle || "unknown"}.`,
