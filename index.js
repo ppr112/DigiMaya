@@ -9,7 +9,7 @@ const { router: smsAgent, init: initSmsAgent } = require("./sms-agent");
 const { createProviderAdminRouter } = require("./provider-admin");
 const { createClientPortalRouter } = require("./client-portal");
 const { createShopifyWebhookRouter } = require("./shopify-webhooks");
-const { createTenantShopifyCartFromIntent } = require("./shopify-service");
+const { fetchTenantShopifyProducts, createTenantShopifyCartFromIntent } = require("./shopify-service");
 const {
   buildMayaSystemPrompt,
   findMatchingProducts,
@@ -249,6 +249,54 @@ function splitRequestedProducts(productInterest) {
     .split(/,|\n|;/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+
+function mapShopifyProductsForConversation(products = []) {
+  return (products || []).map((product) => {
+    const variants = Array.isArray(product.variants) ? product.variants : [];
+    const firstAvailableVariant = variants.find((variant) => variant.available_for_sale) || variants[0] || null;
+
+    return {
+      name: product.title,
+      description: variants.length
+        ? `Available variants: ${variants.slice(0, 6).map((variant) => variant.title).join(", ")}`
+        : "Available on Shopify",
+      price: firstAvailableVariant?.price_amount ?? 0,
+      in_stock: Boolean((product.total_inventory ?? 0) > 0 || firstAvailableVariant?.available_for_sale),
+      sizes_in_stock: variants.map((variant) => variant.title).filter(Boolean),
+      product_url: product.online_store_url || null,
+      image_url: null,
+      category: [],
+      style: [],
+      occasion: []
+    };
+  });
+}
+
+async function loadTenantConversationCatalog(tenant) {
+  const { data: localProducts, error: localProductsError } = await supabase
+    .from("products")
+    .select("*")
+    .eq("tenant_id", tenant.id)
+    .eq("in_stock", true);
+
+  if (localProductsError) {
+    throw localProductsError;
+  }
+
+  const localCatalog = localProducts || [];
+  if (localCatalog.length > 0 || !tenant?.shopify_store_domain || !tenant?.shopify_storefront_access_token) {
+    return localCatalog;
+  }
+
+  const shopifyCatalog = await fetchTenantShopifyProducts({
+    supabase,
+    tenantId: tenant.id,
+    limit: 25
+  });
+
+  return mapShopifyProductsForConversation(shopifyCatalog.products || []);
 }
 
 function resolveProductAgainstCatalog(products, productInterest) {
@@ -798,7 +846,7 @@ async function getMayaReplyForInstagram(senderId, messageText, tenant) {
       tenant_id: tenant.id,
     });
 
-    const { data: products } = await supabase.from("products").select("*").eq("tenant_id", tenant.id).eq("in_stock", true);
+    const products = await loadTenantConversationCatalog(tenant);
     const { data: faqs }     = await supabase.from("faqs").select("*").eq("tenant_id", tenant.id);
     const matchedProducts = findMatchingProducts(products, messageText);
 
@@ -979,7 +1027,7 @@ async function getMayaReplyForWhatsApp(senderPhone, messageText, tenant) {
       tenant_id: tenant.id,
     });
 
-    const { data: products } = await supabase.from("products").select("*").eq("tenant_id", tenant.id).eq("in_stock", true);
+    const products = await loadTenantConversationCatalog(tenant);
     const { data: faqs }     = await supabase.from("faqs").select("*").eq("tenant_id", tenant.id);
     const matchedProducts = findMatchingProducts(products, messageText);
 
@@ -1165,6 +1213,53 @@ app.delete("/cleanup/:session_id", async (req, res) => {
   await supabase.from("handoff_requests").delete().eq("session_id", session_id);
   await supabase.from("chat_messages").delete().eq("session_id", session_id);
   res.json({ message: "Session cleaned up: " + session_id });
+});
+
+app.post("/dev/tenants/:tenantId/chat", async (req, res) => {
+  const { tenantId } = req.params;
+  const { message, session_id, channel } = req.body || {};
+
+  if (!message || !session_id) {
+    return res.status(400).json({ error: "message and session_id are required" });
+  }
+
+  try {
+    const { data: tenant, error: tenantError } = await supabase
+      .from("tenants")
+      .select("*")
+      .eq("id", tenantId)
+      .maybeSingle();
+
+    if (tenantError) {
+      throw tenantError;
+    }
+
+    if (!tenant) {
+      return res.status(404).json({ error: "Tenant not found" });
+    }
+
+    const normalizedChannel = String(channel || "instagram").toLowerCase();
+    let reply;
+    let effectiveSessionId = session_id;
+
+    if (normalizedChannel === "whatsapp") {
+      const senderPhone = String(session_id || "").replace(/^wa_/, "");
+      effectiveSessionId = senderPhone;
+      reply = await getMayaReplyForWhatsApp(senderPhone, message, tenant);
+    } else {
+      reply = await getMayaReplyForInstagram(session_id, message, tenant);
+    }
+
+    res.json({
+      tenant_id: tenant.id,
+      channel: normalizedChannel,
+      session_id: normalizedChannel === "whatsapp" ? `wa_${effectiveSessionId}` : effectiveSessionId,
+      reply
+    });
+  } catch (err) {
+    console.error("Dev tenant chat error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/chat", async (req, res) => {
