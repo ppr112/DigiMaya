@@ -16,7 +16,8 @@ const {
   buildProductResponse,
   buildBudgetRecommendationResponse,
   buildCollectionResponse,
-  buildCategoryListingResponse
+  buildCategoryListingResponse,
+  buildBrowseListingResponse
 } = require("./maya-sales-agent");
 
 const app = express();
@@ -70,6 +71,10 @@ function getDirectCollectionReply(products, latestMessage, tenant) {
 
 function getDirectCategoryReply(products, latestMessage) {
   return buildCategoryListingResponse(products, latestMessage);
+}
+
+function getDirectBrowseReply(products, latestMessage) {
+  return buildBrowseListingResponse(products, latestMessage);
 }
 
 function parseTimeParts(value) {
@@ -896,6 +901,7 @@ async function getMayaReplyForInstagram(senderId, messageText, tenant) {
 
     const directReply =
       getDirectCategoryReply(products, messageText) ||
+      getDirectBrowseReply(products, messageText) ||
       getDirectProductReply(products, messageText, tenant) ||
       getDirectBudgetReply(products, messageText, tenant) ||
       getDirectCollectionReply(products, messageText, tenant);
@@ -1081,6 +1087,7 @@ async function getMayaReplyForWhatsApp(senderPhone, messageText, tenant) {
 
     const directReply =
       getDirectCategoryReply(products, messageText) ||
+      getDirectBrowseReply(products, messageText) ||
       getDirectProductReply(products, messageText, tenant) ||
       getDirectBudgetReply(products, messageText, tenant) ||
       getDirectCollectionReply(products, messageText, tenant);
@@ -1322,6 +1329,7 @@ app.post("/chat", async (req, res) => {
 
     const directReply =
       getDirectCategoryReply(products, message) ||
+      getDirectBrowseReply(products, message) ||
       getDirectProductReply(products, message, {}) ||
       getDirectBudgetReply(products, message, {}) ||
       getDirectCollectionReply(products, message, {});

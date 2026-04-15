@@ -410,6 +410,81 @@ function buildCategoryListingResponse(products, latestMessage) {
   return `Here are our ${category.toLowerCase()} picks:\n${lines.join("\n")}\nWhich one do you want?`;
 }
 
+function getBrowseQualifier(latestMessage) {
+  const message = normalizeText(latestMessage);
+  if (!message) {
+    return null;
+  }
+
+  const wantsBrowse = [
+    "other",
+    "else",
+    "more",
+    "show",
+    "list",
+    "see",
+    "pieces",
+    "options"
+  ].some((phrase) => message.includes(phrase));
+
+  if (!wantsBrowse) {
+    return null;
+  }
+
+  const qualifiers = ["bridal", "wedding", "party", "festive", "daily wear", "accessories", "jewelry", "saree", "sarees", "lehenga", "lehengas", "shawl", "shawls", "bangle", "bangles"];
+  return qualifiers.find((item) => message.includes(item)) || null;
+}
+
+function productMatchesQualifier(product, qualifier) {
+  const haystack = [
+    product.name,
+    product.full_name,
+    product.category,
+    product.style,
+    product.occasion,
+    product.description
+  ]
+    .flatMap((value) => splitAttributeValues(value))
+    .map((value) => normalizeText(value))
+    .filter(Boolean)
+    .join(" ");
+
+  if (!haystack) {
+    return false;
+  }
+
+  if (qualifier === "wedding") {
+    return haystack.includes("wedding") || haystack.includes("bridal");
+  }
+
+  if (qualifier.endsWith("s")) {
+    const singular = qualifier.slice(0, -1);
+    return haystack.includes(qualifier) || haystack.includes(singular);
+  }
+
+  return haystack.includes(qualifier);
+}
+
+function buildBrowseListingResponse(products, latestMessage) {
+  const qualifier = getBrowseQualifier(latestMessage);
+  if (!qualifier) {
+    return null;
+  }
+
+  const picks = (products || [])
+    .filter((product) => product?.in_stock !== false)
+    .filter((product) => productMatchesQualifier(product, qualifier))
+    .slice(0, 4);
+
+  if (picks.length === 0) {
+    return null;
+  }
+
+  const label = qualifier === "wedding" ? "bridal" : qualifier;
+  const lines = picks.map((product) => `- ${product.name}`);
+  return `Here are some ${label} picks:\n${lines.join("\n")}\nWhich one do you want?`;
+}
+
 function isRecentProduct(product) {
   if (product?.is_new_arrival === true) {
     return true;
@@ -770,5 +845,6 @@ module.exports = {
   buildBudgetRecommendationResponse,
   buildCollectionResponse,
   buildCategoryListingResponse,
+  buildBrowseListingResponse,
   parseBudgetFromText
 };
