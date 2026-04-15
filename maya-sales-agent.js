@@ -268,12 +268,58 @@ function splitAttributeValues(value) {
     .filter(Boolean);
 }
 
+function uniqueValues(values = []) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function cleanVariantFragment(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function simplifySizeLabel(value) {
+  const raw = cleanVariantFragment(value);
+  if (!raw) {
+    return "";
+  }
+
+  const beforeSlash = raw.split("/")[0].trim();
+  const withoutMeasurement = beforeSlash.replace(/\([^)]*\)/g, "").trim();
+  const normalized = withoutMeasurement.toUpperCase();
+  const shortMatch = normalized.match(/\b(XXS|XS|S|M|L|XL|XXL|XXXL|FREE SIZE|FREE)\b/);
+  if (shortMatch) {
+    return shortMatch[1] === "FREE" ? "Free Size" : shortMatch[1];
+  }
+
+  return withoutMeasurement || raw;
+}
+
+function extractColorFromVariant(value) {
+  const raw = cleanVariantFragment(value);
+  if (!raw) {
+    return "";
+  }
+
+  const slashParts = raw.split("/").map((part) => part.trim()).filter(Boolean);
+  if (slashParts.length > 1) {
+    return slashParts[slashParts.length - 1];
+  }
+
+  return "";
+}
+
 function getProductColors(product) {
-  return splitAttributeValues(product?.color);
+  const explicitColors = splitAttributeValues(product?.color);
+  if (explicitColors.length > 0) {
+    return uniqueValues(explicitColors);
+  }
+
+  return uniqueValues(splitAttributeValues(product?.sizes_in_stock).map(extractColorFromVariant));
 }
 
 function getProductSizes(product) {
-  return splitAttributeValues(product?.sizes_in_stock);
+  return uniqueValues(splitAttributeValues(product?.sizes_in_stock).map(simplifySizeLabel));
 }
 
 function buildVariantSelectionReply(product) {
@@ -655,6 +701,7 @@ function buildMayaSystemPrompt({ products, faqs, contextLabel, recentChats, late
     "If the customer asks to see collections, give only 3-5 top categories or a few best picks first, not the full catalog dump.",
     "If the customer asks for a category like jewelry, sarees, lehengas, shawls, or bangles, show only product names first. Do not include price, colors, sizes, or long descriptions in that first list.",
     "Once the customer picks one product, ask for color or size next if those options exist. Do not dump variants before the customer chooses the product.",
+    "When asking for size, show only clean size labels like XS, S, M, L, XL, XXL, or Free Size by default. Do not show waist measurements or color-size combinations unless the customer specifically asks for detailed size info.",
     `Use the tenant's catalog currency consistently: ${currency.code} (${currency.symbol}).`,
     "Never switch to a different currency or invent currency symbols.",
     "Never invent price, stock, shipping time, size details, or discount approvals.",
