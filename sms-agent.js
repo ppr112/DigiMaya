@@ -12,16 +12,57 @@ function init(supabaseClient, anthropicClient, twilioClientInstance) {
   twilioClient = twilioClientInstance;
 }
 
+async function resolveSmsTenant(req) {
+  const requestedTenantId =
+    req.body?.tenant_id ||
+    req.query?.tenant_id ||
+    req.headers["x-tenant-id"] ||
+    process.env.DEFAULT_SMS_TENANT_ID ||
+    "";
+
+  if (requestedTenantId) {
+    const { data: tenant, error } = await supabase
+      .from("tenants")
+      .select("*")
+      .eq("id", String(requestedTenantId).trim())
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    return tenant;
+  }
+
+  const { data: tenants, error } = await supabase
+    .from("tenants")
+    .select("*")
+    .limit(2);
+
+  if (error) {
+    throw error;
+  }
+
+  return (tenants || []).length === 1 ? tenants[0] : null;
+}
+
 // ─── INCOMING SMS WEBHOOK ─────────────────────────────────────
 router.post("/sms", async (req, res) => {
   const incomingMsg = req.body.Body;
   const fromNumber = req.body.From;
   const session_id = "sms_" + fromNumber.replace(/\D/g, "");
   try {
+    const tenant = await resolveSmsTenant(req);
+    if (!tenant) {
+      console.error("SMS tenant resolution failed: tenant_id is required when multiple tenants are configured.");
+      return res.send("<Response></Response>");
+    }
+
     await supabase.from("chat_messages").insert({
       session_id,
       role: "user",
       content: incomingMsg,
+      tenant_id: tenant.id,
     });
 
     const intentDetection = await anthropic.messages.create({
@@ -36,18 +77,20 @@ router.post("/sms", async (req, res) => {
     if (detectedIntent === "human") {
       await supabase.from("handoff_requests").insert({
         session_id,
+        tenant_id: tenant.id,
         reason: "customer_request",
         status: "pending",
       });
       const reply = "We have received your request. A team member will contact you shortly on " + fromNumber + ".";
       await sendSMS(fromNumber, reply);
-      await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
+      await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply, tenant_id: tenant.id });
       return res.send("<Response></Response>");
     }
 
     if (detectedIntent === "buy") {
       await supabase.from("handoff_requests").insert({
         session_id,
+        tenant_id: tenant.id,
         reason: "purchase_intent",
         status: "pending",
         product_interest: incomingMsg,
@@ -56,12 +99,19 @@ router.post("/sms", async (req, res) => {
       });
       const reply = "Great! We have noted your interest. Our team will text you back on " + fromNumber + " shortly to complete your purchase.";
       await sendSMS(fromNumber, reply);
-      await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
+      await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply, tenant_id: tenant.id });
       return res.send("<Response></Response>");
     }
 
-    const { data: products } = await supabase.from("products").select("*").eq("in_stock", true);
-    const { data: faqs } = await supabase.from("faqs").select("*");
+    const { data: products } = await supabase
+      .from("products")
+      .select("*")
+      .eq("tenant_id", tenant.id)
+      .eq("in_stock", true);
+    const { data: faqs } = await supabase
+      .from("faqs")
+      .select("*")
+      .eq("tenant_id", tenant.id);
 
     const productList = products && products.length > 0
       ? "PRODUCTS:\n" + products.map(function(p) { return "- " + p.name + " ($" + p.price + "): " + p.description; }).join("\n")
@@ -75,6 +125,7 @@ router.post("/sms", async (req, res) => {
       .from("chat_messages")
       .select("*")
       .eq("session_id", session_id)
+      .eq("tenant_id", tenant.id)
       .order("created_at", { ascending: false })
       .limit(6);
 
@@ -93,7 +144,7 @@ router.post("/sms", async (req, res) => {
 
     const reply = response.content[0].text;
     await sendSMS(fromNumber, reply);
-    await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
+    await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply, tenant_id: tenant.id });
     res.send("<Response></Response>");
 
   } catch (err) {

@@ -251,6 +251,60 @@ function splitRequestedProducts(productInterest) {
     .filter(Boolean);
 }
 
+function createHttpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+async function resolveTenantForScopedRequest({ tenantId, sourceLabel }) {
+  const normalizedTenantId = String(tenantId || "").trim();
+  if (normalizedTenantId) {
+    const { data: tenant, error } = await supabase
+      .from("tenants")
+      .select("*")
+      .eq("id", normalizedTenantId)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    if (!tenant) {
+      throw createHttpError(404, `Tenant not found for ${sourceLabel}`);
+    }
+
+    return tenant;
+  }
+
+  const { data: tenants, error } = await supabase
+    .from("tenants")
+    .select("*")
+    .limit(2);
+
+  if (error) {
+    throw error;
+  }
+
+  if ((tenants || []).length === 1) {
+    return tenants[0];
+  }
+
+  if ((tenants || []).length === 0) {
+    throw createHttpError(404, `No tenants configured for ${sourceLabel}`);
+  }
+
+  throw createHttpError(400, `${sourceLabel} requires tenant_id because multiple tenants are configured`);
+}
+
+function getScopedTenantId(req) {
+  return (
+    req.body?.tenant_id ||
+    req.query?.tenant_id ||
+    req.headers["x-tenant-id"] ||
+    ""
+  );
+}
 
 function mapShopifyProductsForConversation(products = []) {
   return (products || []).map((product) => {
@@ -1194,13 +1248,18 @@ async function sendWhatsAppReply(toPhone, text, accessToken, phoneNumberId) {
 app.get("/products", async (req, res) => {
   const { search } = req.query;
   try {
-    let query = supabase.from("products").select("*");
+    const tenant = await resolveTenantForScopedRequest({
+      tenantId: getScopedTenantId(req),
+      sourceLabel: "/products"
+    });
+
+    let query = supabase.from("products").select("*").eq("tenant_id", tenant.id);
     if (search) { query = query.ilike("name", "%" + search + "%"); }
     const { data, error } = await query;
     if (error) throw error;
-    res.json({ products: data });
+    res.json({ tenant_id: tenant.id, products: data });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -1269,14 +1328,32 @@ app.post("/chat", async (req, res) => {
   }
 
   try {
-    await supabase.from("chat_messages").insert({ session_id, role: "user", content: message });
+    const tenant = await resolveTenantForScopedRequest({
+      tenantId: getScopedTenantId(req),
+      sourceLabel: "/chat"
+    });
 
-    const { data: products } = await supabase.from("products").select("*").eq("in_stock", true);
-    const { data: faqs } = await supabase.from("faqs").select("*");
+    await supabase.from("chat_messages").insert({
+      session_id,
+      role: "user",
+      content: message,
+      tenant_id: tenant.id
+    });
+
+    const { data: products } = await supabase
+      .from("products")
+      .select("*")
+      .eq("tenant_id", tenant.id)
+      .eq("in_stock", true);
+    const { data: faqs } = await supabase
+      .from("faqs")
+      .select("*")
+      .eq("tenant_id", tenant.id);
     const { data: recentChats } = await supabase
       .from("chat_messages")
       .select("*")
       .eq("session_id", session_id)
+      .eq("tenant_id", tenant.id)
       .order("created_at", { ascending: false })
       .limit(10);
 
@@ -1284,20 +1361,33 @@ app.post("/chat", async (req, res) => {
 
     if (detectAutomationLoop(recentChats, message)) {
       const loopReply = "Happy to help when you're ready with a specific product, price, image, or order question.";
-      await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: loopReply });
-      return res.json({ reply: loopReply });
+      await supabase.from("chat_messages").insert({
+        session_id,
+        role: "assistant",
+        content: loopReply,
+        tenant_id: tenant.id
+      });
+      return res.json({ tenant_id: tenant.id, reply: loopReply });
     }
 
-    const directReply = getDirectProductReply(products, message, {}) || getDirectBudgetReply(products, message, {});
+    const directReply =
+      getDirectProductReply(products, message, tenant) ||
+      getDirectBudgetReply(products, message, tenant);
     if (directReply) {
-      await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: directReply });
-      return res.json({ reply: directReply });
+      await supabase.from("chat_messages").insert({
+        session_id,
+        role: "assistant",
+        content: directReply,
+        tenant_id: tenant.id
+      });
+      return res.json({ tenant_id: tenant.id, reply: directReply });
     }
 
     const conversationHistory = buildConversationHistory(recentChats, message);
     const systemPrompt = buildMayaSystemPrompt({
       products,
       faqs,
+      tenant,
       contextLabel: "Website chat",
       recentChats: recentChats || [],
       latestMessage: message
@@ -1315,14 +1405,14 @@ app.post("/chat", async (req, res) => {
     const orderIntent = parsePurchaseIntentPayload(reply);
     if (orderIntent) {
       const savedOrderIntent = await upsertOrderIntent({
-        tenant: { id: null },
+        tenant,
         sessionId,
         channel: "website",
         latestMessage: message,
         intent: orderIntent
       });
       await upsertDraftOrder({
-        tenant: { id: null },
+        tenant,
         sessionId,
         channel: "website",
         latestMessage: message,
@@ -1335,6 +1425,7 @@ app.post("/chat", async (req, res) => {
     if (reply.includes("HUMAN_HANDOFF|")) {
       await supabase.from("handoff_requests").insert({
         session_id,
+        tenant_id: tenant.id,
         reason: "customer_request",
         status: "pending",
       });
@@ -1349,11 +1440,16 @@ app.post("/chat", async (req, res) => {
       reply = reply.split("HUMAN_HANDOFF|")[0].trim();
     }
 
-    await supabase.from("chat_messages").insert({ session_id, role: "assistant", content: reply });
-    res.json({ reply });
+    await supabase.from("chat_messages").insert({
+      session_id,
+      role: "assistant",
+      content: reply,
+      tenant_id: tenant.id
+    });
+    res.json({ tenant_id: tenant.id, reply });
 
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
