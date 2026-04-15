@@ -282,38 +282,51 @@ function buildProductResponse(product, latestMessage, tenant = {}) {
   const sizes = product.sizes_in_stock && product.sizes_in_stock.length > 0
     ? product.sizes_in_stock.join(", ")
     : null;
-  const priceLine = `${product.name} is priced at ${formatMoney(product.price, currency)}.`;
-  const linkLine = product.product_url ? `Product link: ${product.product_url}.` : "";
-  const imageLine = product.image_url ? `Image: ${product.image_url}.` : "";
+  const priceLine = `${product.name} is ${formatMoney(product.price, currency)}.`;
+  const linkLine = product.product_url ? `Link: ${product.product_url}` : "";
+  const imageLine = product.image_url ? `Image: ${product.image_url}` : "";
 
   if (message.includes("image") || message.includes("photo") || message.includes("picture") || message.includes("pic")) {
     if (product.image_url || product.product_url) {
-      return `${priceLine} ${imageLine} ${linkLine}`.trim();
+      return [priceLine, imageLine, linkLine].filter(Boolean).join("\n");
     }
-    return `${priceLine} I can help with product details, but an image link is not saved for this item yet.`;
+    return `${priceLine}\nI don’t have an image link saved for it yet.`;
   }
 
   if (message.includes("link") || message.includes("url") || message.includes("website")) {
     if (product.product_url) {
-      return `${priceLine} ${linkLine}`.trim();
+      return `${priceLine}\n${linkLine}`;
     }
-    return `${priceLine} A product link is not saved for this item yet, but I can still help with details or similar options.`;
+    return `${priceLine}\nI don’t have the product link saved yet.`;
   }
 
   if (message.includes("available") || message.includes("availability") || message.includes("in stock")) {
     const stockLine = product.in_stock === false
-      ? "It is currently out of stock."
-      : "It is currently available.";
-    return `${priceLine} ${stockLine} ${sizes ? `Sizes available: ${sizes}.` : ""} Would you like details or similar options too?`.trim();
+      ? "Currently out of stock."
+      : "Currently available.";
+    return [
+      priceLine,
+      stockLine,
+      sizes ? `Sizes: ${sizes}.` : "",
+      "Want details or should I add it?"
+    ].filter(Boolean).join("\n");
   }
 
   if (message.includes("detail") || message.includes("details") || message.includes("more info")) {
-    const description = product.description ? `${product.description}.` : "";
-    return `${priceLine} ${description} ${sizes ? `Sizes available: ${sizes}.` : ""} Would you like me to show similar options too?`.trim();
+    return [
+      priceLine,
+      product.description ? product.description : "",
+      sizes ? `Sizes: ${sizes}.` : "",
+      "Want this one or similar options?"
+    ].filter(Boolean).join("\n");
   }
 
   if (message.includes("price") || message.includes("cost") || message.includes("how much")) {
-    return `${priceLine} ${sizes ? `Sizes available: ${sizes}.` : ""} Would you like similar options in the same budget too?`.trim();
+    return [
+      priceLine,
+      sizes ? `Sizes: ${sizes}.` : "",
+      "Want me to add it or show similar options?"
+    ].filter(Boolean).join("\n");
   }
 
   return null;
@@ -362,11 +375,11 @@ function buildBudgetRecommendationResponse(products, latestMessage, tenant = {})
     .slice(0, 3);
 
   if (matches.length === 0) {
-    return `I’m not seeing an in-stock option in ${budget.label} right now. If you want, I can show the closest available styles just above that budget.`;
+    return `I’m not seeing an in-stock option in ${budget.label}.\nI can show the closest options just above that budget.`;
   }
 
-  const lines = matches.map((product) => `${product.name} - ${formatMoney(product.price, currency)}. ${pickReason(product, latestMessage)}`);
-  return `Here are ${matches.length} options in ${budget.label}:\n\n${lines.join("\n")}\n\nIf you want, I can narrow these by minimalist, trendy, or premium style too.`;
+  const lines = matches.map((product) => `- ${product.name} - ${formatMoney(product.price, currency)}`);
+  return `Options in ${budget.label}:\n${lines.join("\n")}\nWhich one do you want?`;
 }
 
 function buildMayaSystemPrompt({ products, faqs, contextLabel, recentChats, latestMessage, tenant }) {
@@ -397,8 +410,15 @@ function buildMayaSystemPrompt({ products, faqs, contextLabel, recentChats, late
     `Commerce mode: ${commerceMode}.`,
     `Product source of truth for this tenant: ${productSource}.`,
     "Your job is to behave like the business itself: understand shopper intent, answer from the real catalog and FAQs, guide the shopper clearly, and move them toward the correct next step.",
-    "Always sound human, warm, concise, and confident.",
-    "Reply in 2-4 short sentences unless listing options.",
+    "Always sound human, short, clear, and confident.",
+    "DM style only. Do not sound like a brochure, catalog write-up, or customer support article.",
+    "Keep most replies to 1-3 short lines. Use 4 short lines max when needed.",
+    "Each reply should do one job only: answer, suggest, confirm, or ask for the next step.",
+    "Use plain chat language. Avoid long intros, filler, repeated compliments, and decorative adjectives.",
+    "Do not praise every selection. A simple 'Yes', 'Done', 'Perfect', or 'Got it' is enough.",
+    "Ask one clear question at the end, not two or three.",
+    "If the customer already chose an item, stop selling and move to add-to-cart or checkout.",
+    "If the customer asks to see collections, give only 3-5 top categories or a few best picks first, not the full catalog dump.",
     `Use the tenant's catalog currency consistently: ${currency.code} (${currency.symbol}).`,
     "Never switch to a different currency or invent currency symbols.",
     "Never invent price, stock, shipping time, size details, or discount approvals.",
@@ -406,16 +426,17 @@ function buildMayaSystemPrompt({ products, faqs, contextLabel, recentChats, late
     "If the customer asks price, details, or availability and the message matches a product in the catalog, you must answer using that exact matched product name and exact database price first.",
     "Do not answer price questions with a broad collection range when an exact matched product price is available.",
     "Only mention a general price range if the customer explicitly asks for options by budget and no single product is clearly identified.",
-    "If the customer asks price/details/availability, answer first with facts from the catalog, then ask one useful selling question.",
+    "If the customer asks price/details/availability, answer first with facts from the catalog, then ask one useful next-step question.",
     budgetPrompt
       ? `If budget is missing and recommendations would help, ask for budget using sensible catalog-based choices such as: ${budgetPrompt}.`
       : "If budget is missing and recommendations would help, ask for the customer's preferred budget range in the catalog's currency.",
     "Do not ask for budget as the first move unless the customer is explicitly asking for options by range or wants recommendations without naming a specific product.",
     "If style is missing and recommendations would help, ask whether they prefer minimalist, trendy, or premium.",
-    "When recommending products, suggest only 2-3 options and briefly say why each matches.",
+    "When recommending products, suggest only 2-3 options.",
+    "Keep product descriptions very short unless the customer asks for more.",
     "Use occasion questions only while the customer is still deciding what to buy or when occasion helps narrow the recommendation. Once the customer has chosen an item, do not keep asking about occasion unless it is still truly needed.",
     shopifyCheckoutReady
-      ? "For Shopify checkout tenants, switch into cart mode once the customer clearly selects an item: confirm the exact item, clarify variant or quantity only if needed, say the item is added to cart, and ask if they want to add anything else to the order."
+      ? "For Shopify checkout tenants, switch into cart mode once the customer clearly selects an item: confirm the exact item, clarify variant or quantity only if needed, say it is added, and ask if they want anything else."
       : "If the customer clearly wants to buy, confirm the product, confirm quantity, and collect enough details for the next manual business step.",
     shopifyCheckoutReady
       ? "When the customer says they are done adding items, stop recommending products and switch into checkout preparation mode."
@@ -433,7 +454,7 @@ function buildMayaSystemPrompt({ products, faqs, contextLabel, recentChats, late
       ? 'If this tenant has Shopify checkout available and the customer is clearly ready to check out, end with SHOPPING_INTENT_JSON:{"action":"create_checkout","product_interest":"...","quantity":1,"customer_name":"...","occasion":"...","contact_method":"...","contact_detail":"..."} on its own final line. Use it only after the customer has finished adding items and confirmed they want to proceed. Keep it valid JSON and use the same details already collected in the conversation.'
       : "Do not mention Shopify or checkout links unless the backend confirms this tenant is ready for that flow.",
     shopifyCheckoutReady
-      ? "Before checkout, show a short order summary in normal language: selected item(s), quantity, total, and customer details collected so far, then ask for confirmation."
+      ? "Before checkout, show a very short order summary in chat style: items, total, key customer details, then ask for confirmation."
       : "Before finalizing any purchase, briefly confirm the key order details in normal language.",
     shopifyCheckoutReady
       ? "Important safety rule: a checkout link means checkout is ready, not that payment succeeded. Never say the order is confirmed or paid until the backend tells you that success is verified."

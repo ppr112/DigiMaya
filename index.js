@@ -587,14 +587,13 @@ function tenantSupportsShopifyCheckout(tenant) {
 }
 
 function buildShopifyCheckoutReply(order, checkoutUrl, cart) {
-  const orderLabel = order.order_reference || "your order";
-  const totalLabel = cart?.total_amount && cart?.currency_code
-    ? `${cart.currency_code} ${Number(cart.total_amount).toFixed(2)}`
-    : order.total_amount && order.currency_code
-      ? `${order.currency_code} ${Number(order.total_amount).toFixed(2)}`
+  const totalLabel = order?.total_amount && order?.currency_code
+    ? `${order.currency_code} ${Number(order.total_amount).toFixed(2)}`
+    : cart?.total_amount && cart?.currency_code
+      ? `${cart.currency_code} ${Number(cart.total_amount).toFixed(2)}`
       : "the total shown at checkout";
 
-  return `Your order ${orderLabel} is ready for checkout. Complete it here: ${checkoutUrl}\n\nDigiMaya has prepared your cart and the total is ${totalLabel}.`;
+  return `Perfect, here’s your checkout link:\n${checkoutUrl}\nTotal: ${totalLabel}\nPayment confirms the order.`;
 }
 
 async function maybeCreateShopifyCheckout({
