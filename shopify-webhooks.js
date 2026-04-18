@@ -164,7 +164,6 @@ async function updateOrderFromWebhook({
   const shopifyOrderId = getPayloadOrderId(payload);
   const shopifyOrderNumber = getPayloadOrderNumber(payload);
   const isPaidEvent = topic === "orders/paid" || financialStatus === "paid";
-  const alreadyConfirmed = Boolean(existingOrder.confirmed_at) || existingOrder.payment_status === 'paid';
   const nextStatus = isPaidEvent ? "confirmed" : "order_created";
   const nextPaymentStatus = isPaidEvent
     ? "paid"
@@ -179,20 +178,57 @@ async function updateOrderFromWebhook({
     updated_at: timestamp
   };
 
-  if (isPaidEvent && !existingOrder.confirmed_at) {
+  let updatedOrder = null;
+  let shouldSendConfirmation = false;
+
+  if (isPaidEvent) {
     updatePayload.confirmed_at = timestamp;
-  }
 
-  const { data: updatedOrder, error: orderError } = await supabase
-    .from("orders")
-    .update(updatePayload)
-    .eq("tenant_id", tenant.id)
-    .eq("id", linkedOrderId)
-    .select("id,session_id,channel,customer_name,contact_method,contact_detail,status,payment_status,shopify_order_id,shopify_order_number,confirmed_at")
-    .maybeSingle();
+    const { data, error: orderError } = await supabase
+      .from("orders")
+      .update(updatePayload)
+      .eq("tenant_id", tenant.id)
+      .eq("id", linkedOrderId)
+      .is("confirmed_at", null)
+      .neq("payment_status", "paid")
+      .select("id,session_id,channel,customer_name,contact_method,contact_detail,status,payment_status,shopify_order_id,shopify_order_number,confirmed_at")
+      .maybeSingle();
 
-  if (orderError) {
-    throw orderError;
+    if (orderError) {
+      throw orderError;
+    }
+
+    if (data) {
+      updatedOrder = data;
+      shouldSendConfirmation = true;
+    } else {
+      const { data: currentOrder, error: currentOrderError } = await supabase
+        .from("orders")
+        .select("id,session_id,channel,customer_name,contact_method,contact_detail,status,payment_status,shopify_order_id,shopify_order_number,confirmed_at")
+        .eq("tenant_id", tenant.id)
+        .eq("id", linkedOrderId)
+        .maybeSingle();
+
+      if (currentOrderError) {
+        throw currentOrderError;
+      }
+
+      updatedOrder = currentOrder;
+    }
+  } else {
+    const { data, error: orderError } = await supabase
+      .from("orders")
+      .update(updatePayload)
+      .eq("tenant_id", tenant.id)
+      .eq("id", linkedOrderId)
+      .select("id,session_id,channel,customer_name,contact_method,contact_detail,status,payment_status,shopify_order_id,shopify_order_number,confirmed_at")
+      .maybeSingle();
+
+    if (orderError) {
+      throw orderError;
+    }
+
+    updatedOrder = data;
   }
 
   const cartUpdate = {
@@ -222,17 +258,32 @@ async function updateOrderFromWebhook({
   return {
     matched: true,
     order: updatedOrder,
-    shouldSendConfirmation: isPaidEvent && !alreadyConfirmed,
+    shouldSendConfirmation,
     shippingAddress
   };
 }
 
 function buildPaidOrderConfirmationMessage(tenant, order, shippingAddress) {
   const businessName = tenant?.business_name || "our store";
-  const orderNumber = order?.shopify_order_number ? `#${order.shopify_order_number}` : "your order";
-  const customerName = order?.customer_name ? `${order.customer_name}, ` : "";
-  const shippingLine = shippingAddress ? ` We will ship it to: ${shippingAddress}.` : "";
-  return `${customerName}your payment was received and ${orderNumber} is confirmed with ${businessName}.${shippingLine} If you need to correct any order or delivery details, reply here right away and our team will help before dispatch.`;
+  const orderNumber = order?.shopify_order_number ? `#${order.shopify_order_number}` : "Not available";
+  const orderId = order?.id || "Not available";
+  const paymentReference = order?.shopify_order_id || "Not available";
+  const customerName = order?.customer_name || "Not provided";
+  const phoneNumber = order?.contact_detail || "Not provided";
+  const addressLine = shippingAddress || "Not provided";
+
+  return [
+    `Payment confirmed with ${businessName}.`,
+    "",
+    `Order No: ${orderNumber}`,
+    `Order ID: ${orderId}`,
+    `Payment Ref: ${paymentReference}`,
+    `Name: ${customerName}`,
+    `Phone: ${phoneNumber}`,
+    `Address: ${addressLine}`,
+    "",
+    "If any order or delivery detail needs to be corrected, reply here before dispatch."
+  ].join("\n");
 }
 
 async function sendInstagramReply(recipientId, text, accessToken) {
