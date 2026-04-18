@@ -1,7 +1,4 @@
 require("./instrument")
-setTimeout(() => {
-  throw new Error("DigiMaya Sentry test error")
-}, 3000)
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
