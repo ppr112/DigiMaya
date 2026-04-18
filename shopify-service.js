@@ -1,4 +1,5 @@
 const https = require("https");
+const { logEvent } = require('./logger')
 
 function normalizeLookupText(value) {
   return String(value || "")
@@ -92,10 +93,17 @@ function shopifyGraphqlRequest({ domain, storefrontToken, query, variables }) {
         response.on("data", (chunk) => {
           raw += chunk;
         });
-        response.on("end", () => {
+        response.on("end", async () => {
           try {
             const parsed = raw ? JSON.parse(raw) : {};
             if (response.statusCode >= 400) {
+              if (response.statusCode === 401) {
+                await logEvent("shopify_token_expired", {
+                  tenantId: "unknown",
+                  shopUrl: url,
+                  statusCode: 401
+                }, "error");
+              }
               return reject(new Error(`Shopify API error: ${response.statusCode} ${JSON.stringify(parsed)}`));
             }
             if (parsed.errors?.length) {
@@ -127,10 +135,12 @@ async function getTenantShopifyConfig(supabase, tenantId) {
   }
 
   if (!data) {
+    await logEvent("tenant_not_found", { tenantId }, "error");
     throw new Error("Tenant not found");
   }
 
   if (!data.shopify_store_domain || !data.shopify_storefront_access_token) {
+    await logEvent("shopify_not_configured", { tenantId }, "error");
     throw new Error("Shopify storefront credentials are not configured for this tenant");
   }
 
@@ -586,10 +596,16 @@ async function loadOrderForShopify(supabase, tenantId, orderId) {
   });
 
   if (!lines.length) {
+    await logEvent("order_no_items", { tenantId, orderId }, "error");
     throw new Error("Order has no order items yet");
   }
 
   if (unresolved.length) {
+    await logEvent("shopify_variant_mapping_missing", {
+      tenantId,
+      orderId,
+      unresolvedProducts: unresolved
+    }, "error");
     throw new Error(`Shopify variant mapping is missing for: ${unresolved.join(", ")}`);
   }
 
@@ -668,7 +684,20 @@ async function createTenantShopifyCartFromOrder({ supabase, tenantId, orderId, s
 
   const cart = data.cartCreate?.cart;
   if (!cart?.id) {
+    await logEvent("shopify_cart_create_failed", {
+      tenantId,
+      orderId,
+      productInterest: order.product_interest
+    }, "error");
     throw new Error("Shopify cart create returned no cart");
+  }
+
+  if (!cart?.checkoutUrl) {
+    await logEvent("checkout_url_missing", {
+      tenantId,
+      orderId,
+      cartId: cart.id
+    }, "warn");
   }
 
   return syncLocalShopifyCart({
@@ -699,6 +728,11 @@ async function createTenantShopifyCartFromIntent({
   });
 
   if (!lines.length) {
+    await logEvent("cart_intent_no_products_matched", {
+      tenantId,
+      productInterest,
+      quantity
+    }, "warn");
     throw new Error("No Shopify products matched the requested items");
   }
 
@@ -771,7 +805,20 @@ async function createTenantShopifyCartFromIntent({
 
   const cart = data.cartCreate?.cart;
   if (!cart?.id) {
+    await logEvent("shopify_cart_create_failed", {
+      tenantId,
+      orderId,
+      productInterest
+    }, "error");
     throw new Error("Shopify cart create returned no cart");
+  }
+
+  if (!cart?.checkoutUrl) {
+    await logEvent("checkout_url_missing", {
+      tenantId,
+      orderId,
+      cartId: cart.id
+    }, "warn");
   }
 
   const synced = await syncLocalShopifyCart({
@@ -782,6 +829,14 @@ async function createTenantShopifyCartFromIntent({
     channel: effectiveChannel,
     cart
   });
+
+  await logEvent("shopify_cart_created", {
+    tenantId,
+    orderId,
+    productInterest,
+    checkoutUrl: synced.cart.shopify_checkout_url,
+    totalAmount: synced.cart.total_amount
+  }, "info");
 
   if (orderId) {
     const updatedOrder = await syncOrderFromShopifyCart({
@@ -857,6 +912,11 @@ async function fetchTenantShopifyCart({ supabase, tenantId, localCartId }) {
 
   const cart = data.cart;
   if (!cart?.id) {
+    await logEvent("shopify_cart_fetch_failed", {
+      tenantId,
+      localCartId,
+      shopifyCartGid: cartResult.data.shopify_cart_gid
+    }, "error");
     throw new Error("Shopify cart fetch returned no cart");
   }
 
