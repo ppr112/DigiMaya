@@ -1,4 +1,5 @@
 require("./instrument")
+const { logEvent } = require('./logger')
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -930,6 +931,18 @@ async function getMayaReplyForInstagram(senderId, messageText, tenant) {
       tenant_id: tenant.id,
     });
 
+  await logEvent('message_received', {
+     tenantId: tenant.id,
+     customerId: senderId,
+     channel: 'instagram',
+     message: messageText.substring(0, 100)
+    }, 'info')
+
+    await supabase
+  .from('tenants')
+  .update({ last_message_received: new Date().toISOString() })
+  .eq('id', tenant.id)
+
     const products = await loadTenantConversationCatalog(tenant);
     const { data: faqs }     = await supabase.from("faqs").select("*").eq("tenant_id", tenant.id);
     const matchedProducts = findMatchingProducts(products, messageText);
@@ -1174,6 +1187,18 @@ async function getMayaReplyForWhatsApp(senderPhone, messageText, tenant) {
       content: messageText,
       tenant_id: tenant.id,
     });
+     
+    await logEvent('message_received', {
+      tenantId: tenant.id,
+      customerId: senderPhone,
+      channel: 'whatsapp',
+      message: messageText.substring(0, 100)
+    }, 'info')
+
+     await supabase
+  .from('tenants')
+  .update({ last_message_received: new Date().toISOString() })
+  .eq('id', tenant.id)
 
     const products = await loadTenantConversationCatalog(tenant);
     const { data: faqs }     = await supabase.from("faqs").select("*").eq("tenant_id", tenant.id);
