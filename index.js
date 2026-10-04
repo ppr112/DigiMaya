@@ -1,10 +1,11 @@
+require("dotenv").config();
 require("./instrument")
 const { logEvent } = require('./logger')
-require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 const Anthropic = require("@anthropic-ai/sdk");
+const { createSalesAI } = require("./sales-ai-provider");
 const { Resend } = require("resend");
 const { connectCall } = require("./call-agent");
 const { router: smsAgent, init: initSmsAgent } = require("./sms-agent");
@@ -34,7 +35,17 @@ if (!supabaseKey) {
 }
 
 const supabase = createClient(process.env.SUPABASE_URL, supabaseKey);
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// Keep legacy routes available without requiring a Claude key at startup.
+let anthropicClient;
+const anthropic = {
+  messages: {
+    create: (...args) => {
+      anthropicClient ||= new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      return anthropicClient.messages.create(...args);
+    }
+  }
+};
+const salesAI = createSalesAI({ anthropic });
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 app.use("/webhooks", createShopifyWebhookRouter({ supabase }));
@@ -993,14 +1004,11 @@ async function getMayaReplyForInstagram(senderId, messageText, tenant) {
       latestMessage: messageText
     });
 
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 300,
+    let reply = await salesAI.generateText({
+      maxOutputTokens: 300,
       system: systemPrompt,
       messages: conversationHistory,
     });
-
-    let reply = response.content[0].text;
     const shoppingIntent = parseShoppingIntentPayload(reply);
     const orderIntent = parsePurchaseIntentPayload(reply);
     const cleanReply = stripAssistantControlMarkers(reply);
@@ -1250,14 +1258,11 @@ async function getMayaReplyForWhatsApp(senderPhone, messageText, tenant) {
       latestMessage: messageText
     });
 
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 300,
+    let reply = await salesAI.generateText({
+      maxOutputTokens: 300,
       system: systemPrompt,
       messages: conversationHistory,
     });
-
-    let reply = response.content[0].text;
     const shoppingIntent = parseShoppingIntentPayload(reply);
     const orderIntent = parsePurchaseIntentPayload(reply);
     const cleanReply = stripAssistantControlMarkers(reply);
